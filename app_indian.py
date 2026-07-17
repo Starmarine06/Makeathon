@@ -93,21 +93,21 @@ def load_model_for_symbol(symbol):
     print(f"⚠️ No model found for {symbol}, using momentum-based predictions")
     return None
 
-def prepare_features_advanced(df):
+def prepare_features_advanced(df, symbol=None, market='INDIA'):
     """Prepare all advanced features - CALIBRATED FOR INDIAN MARKET"""
-    
+
     # Basic returns and volatility
     df["returns"] = df["Close"].pct_change().fillna(0)
     df["volatility"] = df["returns"].rolling(10).std().fillna(0)
     df["momentum"] = df["Close"] / df["Close"].shift(10) - 1
-    
+
     # Moving averages
     df["sma10"] = df["Close"].rolling(10).mean()
     df["sma20"] = df["Close"].rolling(20).mean()
     df["sma50"] = df["Close"].rolling(50).mean()
     df["ema10"] = df["Close"].ewm(span=10).mean()
     df["ema20"] = df["Close"].ewm(span=20).mean()
-    
+
     # Bollinger Bands - calibrated for Indian market volatility
     df["bb_middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
@@ -115,44 +115,64 @@ def prepare_features_advanced(df):
     df["bb_lower"] = df["bb_middle"] - (2.5 * bb_std)
     df["bb_width"] = df["bb_upper"] - df["bb_lower"]
     df["bb_position"] = (df["Close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
-    
+
     # RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df["rsi"] = 100 - (100 / (1 + rs))
-    
+
     # MACD
     ema12 = df["Close"].ewm(span=12).mean()
-    ema26 = df["Close"].ewm(span=26).mean()
-    df["macd"] = ema12 - ema26
+    empat26 = df["Close"].ewm(span=26).mean()
+    df["macd"] = ema12 - empat26
     df["macd_signal"] = df["macd"].ewm(span=9).mean()
     df["macd_diff"] = df["macd"] - df["macd_signal"]
-    
+
     # Volume
     df["volume_sma"] = df["Volume"].rolling(20).mean()
     df["volume_ratio"] = df["Volume"] / df["volume_sma"]
-    
+
     # Price features
     df["high_low_pct"] = (df["High"] - df["Low"]) / df["Close"]
     df["close_open_pct"] = (df["Close"] - df["Open"]) / df["Open"]
-    
+
     # Indian market specific features
     # Gap detection (common in Indian markets due to overnight news)
     df["gap"] = (df["Open"] - df["Close"].shift(1)) / df["Close"].shift(1)
-    
+
     # Intraday range
     df["intraday_range"] = (df["High"] - df["Low"]) / df["Open"]
-    
+
     # Sentiment placeholders
     df["sentiment"] = 0.0
     df["sentiment_ma3"] = 0.0
     df["sentiment_ma7"] = 0.0
     df["sentiment_slope"] = 0.0
-    
+
+    # Add profitability ratios if symbol is provided
+    if symbol is not None:
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            # Profitability ratios
+            profitability_map = {
+                'roe': 'returnOnEquity',
+                'roa': 'returnOnAssets',
+                'profit_margin': 'profitMargins',
+                'operating_margin': 'operatingMargins',
+                'gross_margin': 'grossMargins'
+            }
+            for feature, info_key in profitability_map.items():
+                if info_key in info and info[info_key] is not None:
+                    df[feature] = info[info_key]
+                # If not available, leave as NaN (will be filled with 0 later)
+        except Exception as e:
+            print(f"⚠️ Could not fetch profitability ratios for {symbol}: {e}")
+
     df.fillna(0, inplace=True)
-    
+
     return df
 
 def get_predictions(df, df_combined, model_info):
@@ -390,7 +410,7 @@ def get_live_update(symbol):
                 df_hist.columns = df_hist.columns.get_level_values(0)
             
             df_combined = pd.concat([df_hist, df.tail(50)]).drop_duplicates()
-            df_combined = prepare_features_advanced(df_combined)
+            df_combined = prepare_features_advanced(df_combined, symbol=symbol, market='INDIA')
             
             try:
                 X = df_combined[model_info['features']].tail(1)

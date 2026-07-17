@@ -164,7 +164,7 @@ def compute_sentiment(df, articles):
     
     return df
 
-def prepare_features(df):
+def prepare_features(df, symbol=None, market='INDIA'):
     """
     Prepare all technical and sentiment features.
     Handles inf/NaN values safely.
@@ -172,53 +172,53 @@ def prepare_features(df):
     # Handle MultiIndex columns
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    
+
     # Basic features
     df["returns"] = df["Close"].pct_change().fillna(0)
     df["volatility"] = df["returns"].rolling(10).std().fillna(0)
     df["momentum"] = df["Close"] / df["Close"].shift(10) - 1
-    
+
     # Moving averages
     df["sma10"] = df["Close"].rolling(10).mean()
     df["sma20"] = df["Close"].rolling(20).mean()
     df["sma50"] = df["Close"].rolling(50).mean()
     df["ema10"] = df["Close"].ewm(span=10).mean()
     df["ema20"] = df["Close"].ewm(span=20).mean()
-    
+
     # Bollinger Bands (handle division by zero)
     bb_mid = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std().fillna(0)
-    
+
     df["bb_mid"] = bb_mid
     df["bb_up"] = bb_mid + 2.5 * bb_std
     df["bb_low"] = bb_mid - 2.5 * bb_std
     df["bb_width"] = df["bb_up"] - df["bb_low"]
-    
+
     # Safe division for bb_position
     bb_range = df["bb_up"] - df["bb_low"]
-    df["bb_pos"] = np.where(bb_range > 0, 
-                            (df["Close"] - df["bb_low"]) / bb_range, 
+    df["bb_pos"] = np.where(bb_range > 0,
+                            (df["Close"] - df["bb_low"]) / bb_range,
                             0.5)
-    
+
     # RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean().fillna(0)
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean().fillna(0)
     rs = np.where(loss > 0, gain / loss, 0)
     df["rsi"] = 100 - (100 / (1 + rs))
-    
+
     # MACD
     ema12 = df["Close"].ewm(span=12).mean()
     ema26 = df["Close"].ewm(span=26).mean()
     df["macd"] = ema12 - ema26
     df["macd_sig"] = df["macd"].ewm(span=9).mean()
     df["macd_diff"] = df["macd"] - df["macd_sig"]
-    
+
     # Volume (safe division)
     vol_sma = df["Volume"].rolling(20).mean().fillna(1)
     df["vol_sma"] = vol_sma
     df["vol_ratio"] = np.where(vol_sma > 0, df["Volume"] / vol_sma, 1)
-    
+
     # Price ranges (safe division)
     df["high_low_pct"] = np.where(df["Close"] > 0,
                                   (df["High"] - df["Low"]) / df["Close"],
@@ -226,26 +226,46 @@ def prepare_features(df):
     df["close_open_pct"] = np.where(df["Open"] > 0,
                                     (df["Close"] - df["Open"]) / df["Open"],
                                     0)
-    
+
     # Gap and intraday (safe division)
     prev_close = df["Close"].shift(1).fillna(df["Close"])
     df["gap"] = np.where(prev_close > 0,
                          (df["Open"] - prev_close) / prev_close,
                          0)
-    
+
     df["intra_range"] = np.where(df["Open"] > 0,
                                   (df["High"] - df["Low"]) / df["Open"],
                                   0)
-    
+
     # Sentiment placeholders
     for col in ["sentiment", "sentiment_ma3", "sentiment_ma7", "sentiment_slope"]:
         if col not in df.columns:
             df[col] = 0.0
-    
+
+    # Add profitability ratios if symbol is provided
+    if symbol is not None:
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            # Profitability ratios
+            profitability_map = {
+                'roe': 'returnOnEquity',
+                'roa': 'returnOnAssets',
+                'profit_margin': 'profitMargins',
+                'operating_margin': 'operatingMargins',
+                'gross_margin': 'grossMargins'
+            }
+            for feature, info_key in profitability_map.items():
+                if info_key in info and info[info_key] is not None:
+                    df[feature] = info[info_key]
+                # If not available, leave as NaN (will be filled with 0 later)
+        except Exception as e:
+            print(f"⚠️ Could not fetch profitability ratios for {symbol}: {e}")
+
     # Final cleanup
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.fillna(0, inplace=True)
-    
+
     return df
 
 def plot_results(df_test, y_test, y_pred, y_prob, symbol):
@@ -351,7 +371,7 @@ if __name__ == "__main__":
     
     # 2. Prepare technical features
     print("\n📊 Preparing technical features...")
-    df_train = prepare_features(df_train)
+    df_train = prepare_features(df_train, symbol=SYMBOL, market='INDIA')
     
     # 3. Fetch sentiment
     headlines = fetch_toi_headlines(SYMBOL, TRAIN_START, TRAIN_END)
@@ -376,7 +396,8 @@ if __name__ == "__main__":
         "vol_sma", "vol_ratio",
         "high_low_pct", "close_open_pct",
         "gap", "intra_range",
-        "sentiment", "sentiment_ma3", "sentiment_ma7", "sentiment_slope"
+        "sentiment", "sentiment_ma3", "sentiment_ma7", "sentiment_slope",
+        "roe", "roa", "profit_margin", "operating_margin", "gross_margin"
     ]
     
     X_train = df_train[features]
@@ -429,7 +450,7 @@ if __name__ == "__main__":
     if not df_test.empty:
         print(f"✅ Loaded {len(df_test)} test days")
         
-        df_test = prepare_features(df_test)
+        df_test = prepare_features(df_test, symbol=SYMBOL, market='INDIA')
         headlines_test = fetch_toi_headlines(SYMBOL, TEST_START, TEST_END)
         df_test = compute_sentiment(df_test, headlines_test)
         

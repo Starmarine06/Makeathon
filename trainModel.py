@@ -80,48 +80,68 @@ def compute_sentiment(df, articles):
     df['sentiment_slope'] = df['sentiment'] - df['sentiment'].shift(3).fillna(0)
     return df
 
-def prepare_features_advanced(df):
+def prepare_features_advanced(df, symbol=None, market='US'):
     """Prepare advanced features matching web app"""
     df["returns"] = df["Close"].pct_change().fillna(0)
     df["volatility"] = df["returns"].rolling(10).std().fillna(0)
     df["momentum"] = df["Close"] / df["Close"].shift(10) - 1
-    
+
     df["sma10"] = df["Close"].rolling(10).mean()
     df["sma20"] = df["Close"].rolling(20).mean()
     df["sma50"] = df["Close"].rolling(50).mean()
     df["ema10"] = df["Close"].ewm(span=10).mean()
     df["ema20"] = df["Close"].ewm(span=20).mean()
-    
+
     df["bb_middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
     df["bb_upper"] = df["bb_middle"] + (2 * bb_std)
     df["bb_lower"] = df["bb_middle"] - (2 * bb_std)
     df["bb_width"] = df["bb_upper"] - df["bb_lower"]
     df["bb_position"] = (df["Close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
-    
+
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df["rsi"] = 100 - (100 / (1 + rs))
-    
+
     ema12 = df["Close"].ewm(span=12).mean()
     ema26 = df["Close"].ewm(span=26).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9).mean()
     df["macd_diff"] = df["macd"] - df["macd_signal"]
-    
+
     df["volume_sma"] = df["Volume"].rolling(20).mean()
     df["volume_ratio"] = df["Volume"] / df["volume_sma"]
-    
+
     df["high_low_pct"] = (df["High"] - df["Low"]) / df["Close"]
     df["close_open_pct"] = (df["Close"] - df["Open"]) / df["Open"]
-    
+
     df["sentiment"] = 0.0
     df["sentiment_ma3"] = 0.0
     df["sentiment_ma7"] = 0.0
     df["sentiment_slope"] = 0.0
-    
+
+    # Add profitability ratios if symbol is provided
+    if symbol is not None:
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            # Profitability ratios
+            profitability_map = {
+                'roe': 'returnOnEquity',
+                'roa': 'returnOnAssets',
+                'profit_margin': 'profitMargins',
+                'operating_margin': 'operatingMargins',
+                'gross_margin': 'grossMargins'
+            }
+            for feature, info_key in profitability_map.items():
+                if info_key in info and info[info_key] is not None:
+                    df[feature] = info[info_key]
+                # If not available, leave as NaN (will be filled with 0 later)
+        except Exception as e:
+            print(f"⚠️ Could not fetch profitability ratios for {symbol}: {e}")
+
     df.fillna(0, inplace=True)
     return df
 
@@ -240,20 +260,20 @@ def plot_test_results(df_test, y_test, y_test_pred, y_test_proba, symbol):
 # MAIN EXECUTION
 # ==========================
 print("\n" + "="*70)
-print(f"📊 TRAINING MODEL FOR {SYMBOL}")
+print(f"TRAINING MODEL FOR {SYMBOL}")
 print("="*70)
 
 # Load training data
-print("\n📊 Loading training data...")
+print("\nLoading training data...")
 df_train = yf.download(SYMBOL, start=TRAIN_START, end=TRAIN_END, progress=False, auto_adjust=True)
 
 if isinstance(df_train.columns, pd.MultiIndex):
     df_train.columns = df_train.columns.get_level_values(0)
 
-print("📊 Preparing features...")
-df_train = prepare_features_advanced(df_train)
+print("Preparing features...")
+df_train = prepare_features_advanced(df_train, symbol=SYMBOL, market='US')
 
-print("📰 Fetching news sentiment...")
+print("Fetching news sentiment...")
 train_articles = fetch_gdelt_articles(SYMBOL, pd.to_datetime(TRAIN_START), pd.to_datetime(TRAIN_END))
 df_train = compute_sentiment(df_train, train_articles)
 
@@ -268,7 +288,8 @@ ALL_FEATURES = [
     'rsi', 'macd', 'macd_signal', 'macd_diff',
     'volume_sma', 'volume_ratio',
     'high_low_pct', 'close_open_pct',
-    'sentiment', 'sentiment_ma3', 'sentiment_ma7', 'sentiment_slope'
+    'sentiment', 'sentiment_ma3', 'sentiment_ma7', 'sentiment_slope',
+    'roe', 'roa', 'profit_margin', 'operating_margin', 'gross_margin'
 ]
 
 FEATURES = [f for f in ALL_FEATURES if f in df_train.columns]
@@ -302,19 +323,19 @@ train_accuracy = accuracy_score(y_train, y_train_pred)
 train_f1 = f1_score(y_train, y_train_pred)
 train_roc_auc = roc_auc_score(y_train, y_train_proba)
 
-print(f"\n📊 TRAINING PERFORMANCE:")
+print(f"\nTRAINING PERFORMANCE:")
 print(f"   Accuracy:  {train_accuracy:.4f} ({train_accuracy*100:.2f}%)")
 print(f"   F1-Score:  {train_f1:.4f}")
 print(f"   ROC-AUC:   {train_roc_auc:.4f}")
 
 # Load and evaluate on test data
-print("\n📊 Loading test data...")
+print("\nLoading test data...")
 df_test = yf.download(SYMBOL, start=TEST_START, end=TEST_END, progress=False, auto_adjust=True)
 
 if isinstance(df_test.columns, pd.MultiIndex):
     df_test.columns = df_test.columns.get_level_values(0)
 
-df_test = prepare_features_advanced(df_test)
+df_test = prepare_features_advanced(df_test, symbol=SYMBOL, market='US')
 
 test_articles = fetch_gdelt_articles(SYMBOL, pd.to_datetime(TEST_START), pd.to_datetime(TEST_END))
 df_test = compute_sentiment(df_test, test_articles)
