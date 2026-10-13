@@ -1,361 +1,241 @@
-from flask import Flask, render_template, jsonify
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import pickle
+"""Stock Trading AI: one Flask app for US and Indian (NSE/BSE) stocks.
+
+    python app.py            # http://127.0.0.1:5000
+    FLASK_DEBUG=1 python app.py
+    HOST=0.0.0.0 python app.py   # only if you really want it reachable from your network
+"""
+import logging
 import os
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from flask import Flask, jsonify, render_template, request
+
+from stockai import data as data_mod
+from stockai import semantic
+from stockai.explain import explain
+from stockai.features import WARMUP, build_features
+from stockai.markets import (IN_INDICES, NIFTY, US_NAMES, Market, SymbolError, display_name,
+                             exchange_label, is_session_open, resolve_symbol)
+from stockai.model import (HEURISTIC_BUY, HEURISTIC_SELL, heuristic_proba, load_model,
+                           predict_proba, public_meta)
+from stockai.signals import detect_signals, zone
 
 app = Flask(__name__)
+log = logging.getLogger("stockai")
 
-# Cache for loaded models
-model_cache = {}
+CHART_BARS = 750          # ~3 years of daily candles
+ANALYSIS_TTL = 300        # seconds; the daily model only changes when a new bar prints
+NEW_NEWS_WINDOWS = 8      # max uncached weekly news windows one web request may fetch
+SHOWN_HEADLINES = 10
+MARKER_COLORS = {"BUY": "0,255,136", "SELL": "255,68,68"}
 
-def load_model_for_symbol(symbol):
-    """Load model for specific symbol, use cache if available"""
-    if symbol in model_cache:
-        return model_cache[symbol]
-    
-    model_file = f"{symbol}_model.pkl"
-    
-    if os.path.exists(model_file):
-        try:
-            with open(model_file, 'rb') as f:
-                model_data = pickle.load(f)
-            
-            model_info = {
-                'model': model_data['model'],
-                'scaler': model_data['scaler'],
-                'features': list(model_data['model'].feature_names_in_) if hasattr(model_data['model'], 'feature_names_in_') else None
-            }
-            
-            model_cache[symbol] = model_info
-            print(f"✅ Loaded model for {symbol}: {model_file}")
-            return model_info
-        except Exception as e:
-            print(f"❌ Error loading model for {symbol}: {e}")
-            return None
-    else:
-        print(f"⚠️ No model found for {symbol}, using momentum-based predictions")
+
+class NoData(Exception):
+    pass
+
+
+def _headlines(news, mk: Market) -> list[dict]:
+    if news is None or news.empty:
+        return []
+    tz = ZoneInfo(mk.tz)
+    rows = []
+    for r in news.sort_values("ts", ascending=False).head(SHOWN_HEADLINES).itertuples():
+        link = r.link if urlparse(r.link).scheme in ("http", "https") else ""
+        rows.append({"time": r.ts.tz_convert(tz).strftime("%d %b %H:%M"), "title": r.title,
+                     "source": r.source, "link": link, "score": round(float(r.score), 2)})
+    return rows
+
+
+def _events(earn) -> dict:
+    out = {"next_earnings": None, "last_surprise": None, "last_earnings": None}
+    if earn is None or earn.empty:
+        return out
+    today = pd.Timestamp(datetime.now(timezone.utc).date())
+    future = earn[earn.index >= today]
+    if len(future):
+        out["next_earnings"] = future.index[0].date().isoformat()
+    past = earn[(earn.index < today) & earn["surprise"].notna()]
+    if len(past):
+        out["last_earnings"] = past.index[-1].date().isoformat()
+        out["last_surprise"] = round(float(past["surprise"].iloc[-1]), 1)
+    return out
+
+
+def _tone(news) -> dict | None:
+    if news is None or news.empty:
         return None
+    recent = news[news["ts"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=3)]
+    if recent.empty:
+        return None
+    return {"mean": round(float(recent["score"].mean()), 2), "count": int(len(recent)),
+            "positive": int((recent["score"] > 0.3).sum()), "negative": int((recent["score"] < -0.3).sum())}
 
-def prepare_features_advanced(df, symbol=None, market='US'):
-    """Prepare all advanced features"""
-    df["returns"] = df["Close"].pct_change().fillna(0)
-    df["volatility"] = df["returns"].rolling(10).std().fillna(0)
-    df["momentum"] = df["Close"] / df["Close"].shift(10) - 1
 
-    # Moving averages
-    df["sma10"] = df["Close"].rolling(10).mean()
-    df["sma20"] = df["Close"].rolling(20).mean()
-    df["sma50"] = df["Close"].rolling(50).mean()
-    df["ema10"] = df["Close"].ewm(span=10).mean()
-    df["ema20"] = df["Close"].ewm(span=20).mean()
+def analyze(symbol: str, mk: Market) -> dict:
+    """Daily candles + model probabilities + signals + explanation for a symbol (cached)."""
+    def build():
+        df = data_mod.fetch_daily(symbol, years=5)
+        if df.empty or len(df) < WARMUP + 20:
+            raise NoData(f"No price data for {symbol}. Check the symbol and market.")
+        ctx = data_mod.align_context(data_mod.fetch_context(mk), df.index)
+        model = load_model(symbol)
+        msem = (model.meta.get("semantic") or {}) if model else {}
 
-    # Bollinger Bands
-    df["bb_middle"] = df["Close"].rolling(20).mean()
-    bb_std = df["Close"].rolling(20).std()
-    df["bb_upper"] = df["bb_middle"] + (2 * bb_std)
-    df["bb_lower"] = df["bb_middle"] - (2 * bb_std)
-    df["bb_width"] = df["bb_upper"] - df["bb_lower"]
-    df["bb_position"] = (df["Close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
-
-    # RSI
-    delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-
-    # MACD
-    ema12 = df["Close"].ewm(span=12).mean()
-    ema26 = df["Close"].ewm(span=26).mean()
-    df["macd"] = ema12 - ema26
-    df["macd_signal"] = df["macd"].ewm(span=9).mean()
-    df["macd_diff"] = df["macd"] - df["macd_signal"]
-
-    # Volume
-    df["volume_sma"] = df["Volume"].rolling(20).mean()
-    df["volume_ratio"] = df["Volume"] / df["volume_sma"]
-
-    # Price features
-    df["high_low_pct"] = (df["High"] - df["Low"]) / df["Close"]
-    df["close_open_pct"] = (df["Close"] - df["Open"]) / df["Open"]
-
-    # Sentiment placeholders
-    df["sentiment"] = 0.0
-    df["sentiment_ma3"] = 0.0
-    df["sentiment_ma7"] = 0.0
-    df["sentiment_slope"] = 0.0
-
-    # Add profitability ratios if symbol is provided
-    if symbol is not None:
+        sem = news = earn = None
         try:
-            stock = yf.Ticker(symbol)
-            info = stock.info
-            # Profitability ratios
-            profitability_map = {
-                'roe': 'returnOnEquity',
-                'roa': 'returnOnAssets',
-                'profit_margin': 'profitMargins',
-                'operating_margin': 'operatingMargins',
-                'gross_margin': 'grossMargins'
-            }
-            for feature, info_key in profitability_map.items():
-                if info_key in info and info[info_key] is not None:
-                    df[feature] = info[info_key]
-                # If not available, leave as NaN (will be filled with 0 later)
-        except Exception as e:
-            print(f"⚠️ Could not fetch profitability ratios for {symbol}: {e}")
+            if msem.get("enabled"):
+                # Same scorer as training, or the sentiment scale would silently differ.
+                start = max(df.index[0].date(), datetime.fromisoformat(msem["news_start"]).date())
+                sem, info = semantic.build_semantic(symbol, mk, df.index, scorer=msem["scorer"],
+                                                    start=start, max_new=NEW_NEWS_WINDOWS)
+                news, earn = info["news"], info["earnings"]
+            elif not symbol.startswith("^"):
+                today = datetime.now(timezone.utc).date()
+                news = semantic.load_news(symbol, mk, today - timedelta(days=21), today,
+                                          semantic.get_scorer(), max_new=4)
+                earn = data_mod.fetch_earnings(symbol)
+        except Exception:
+            log.exception("semantic layer failed for %s; continuing without it", symbol)
 
-    df.fillna(0, inplace=True)
-    return df
-
-def get_predictions(df, df_combined, model_info):
-    """Get ML predictions using symbol-specific model"""
-    if model_info and model_info['model'] and model_info['scaler'] and model_info['features']:
-        try:
-            FEATURES = model_info['features']
-            missing_features = set(FEATURES) - set(df_combined.columns)
-            if missing_features:
-                print(f"⚠️ Missing features: {missing_features}")
-                return None
-            
-            X = df_combined[FEATURES].tail(len(df))
-            X_scaled = model_info['scaler'].transform(X)
-            probs = model_info['model'].predict_proba(X_scaled)[:, 1] * 100
-            return probs
-        except Exception as e:
-            print(f"❌ Prediction error: {e}")
-            return None
-    
-    # Fallback: momentum-based
-    probs = []
-    for i, row in df.iterrows():
-        if i in df_combined.index:
-            momentum = df_combined.loc[i, 'momentum']
-            prob = 50 + (momentum * 100)
-            prob = max(10, min(90, prob))
-            probs.append(prob)
-    return np.array(probs)
-
-def detect_signals(probs, prices, threshold_buy=52, threshold_sell=48, cooldown=2):
-    """Detect BUY and SELL signals"""
-    signals = []
-    last_signal_index = -cooldown
-    
-    for i in range(1, len(probs)):
-        current_prob = probs[i]
-        prev_prob = probs[i-1]
-        
-        if i - last_signal_index < cooldown:
-            continue
-        
-        if current_prob >= threshold_buy and prev_prob < threshold_buy:
-            signals.append({'index': i, 'type': 'BUY', 'prob': current_prob})
-            last_signal_index = i
-        
-        elif current_prob <= threshold_sell and prev_prob > threshold_sell:
-            signals.append({'index': i, 'type': 'SELL', 'prob': current_prob})
-            last_signal_index = i
-        
-        elif i > 5:
-            prob_change = current_prob - probs[i-3]
-            if prob_change > 8 and current_prob > 50:
-                signals.append({'index': i, 'type': 'BUY', 'prob': current_prob})
-                last_signal_index = i
-        
-        elif i > 5:
-            prob_change = probs[i-3] - current_prob
-            if prob_change > 8 and current_prob < 50:
-                signals.append({'index': i, 'type': 'SELL', 'prob': current_prob})
-                last_signal_index = i
-    
-    return signals
-
-@app.route('/')
-def home():
-    return render_template('index.html')
-
-@app.route('/api/historical/<symbol>')
-def get_historical_data(symbol):
-    try:
-        symbol = symbol.upper().strip()
-        
-        # Load model for this symbol
-        model_info = load_model_for_symbol(symbol)
-        
-        # Get data
-        df = yf.download(symbol, period="2y", interval="1h", progress=False, auto_adjust=True)
-        
-        if df.empty:
-            return jsonify({'error': f'No data available for {symbol}'}), 404
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        
-        if hasattr(df.index, 'tz') and df.index.tz is not None:
-            df.index = df.index.tz_convert(None)
-        
-        # Get historical data
-        df_hist = yf.download(symbol, period="90d", interval="1d", progress=False, auto_adjust=True)
-        if isinstance(df_hist.columns, pd.MultiIndex):
-            df_hist.columns = df_hist.columns.get_level_values(0)
-        if hasattr(df_hist.index, 'tz') and df_hist.index.tz is not None:
-            df_hist.index = df_hist.index.tz_convert(None)
-        
-        # Combine and prepare
-        df_combined = pd.concat([df_hist, df]).drop_duplicates()
-        df_combined = prepare_features_advanced(df_combined, symbol=symbol, market='US')
-        
-        # Get predictions using symbol-specific model
-        probs = get_predictions(df, df_combined, model_info)
-        
-        if probs is None:
-            return jsonify({'error': 'Prediction failed'}), 500
-        
-        # Detect signals
-        prices = df['Close'].values
-        signal_points = detect_signals(probs, prices, threshold_buy=52, threshold_sell=48, cooldown=2)
-        
-        print(f"✅ {symbol}: Found {len(signal_points)} signals")
-        
-        # Prepare candlestick data
-        candlestick_data = []
-        for idx, row in df.iterrows():
-            timestamp = int(idx.timestamp())
-            candlestick_data.append({
-                'time': timestamp,
-                'open': round(float(row['Open']), 2),
-                'high': round(float(row['High']), 2),
-                'low': round(float(row['Low']), 2),
-                'close': round(float(row['Close']), 2)
-            })
-        
-        # Prepare markers with enhanced visuals
-        markers = []
-        for sig in signal_points:
-            idx = sig['index']
-            if idx < len(candlestick_data):
-                if sig['type'] == 'BUY':
-                    markers.append({
-                        'time': candlestick_data[idx]['time'],
-                        'position': 'belowBar',
-                        'color': '#00ff88',  # Bright green
-                        'shape': 'arrowUp',
-                        'text': f"BUY {sig['prob']:.0f}%",
-                        'size': 3  # Larger size
-                    })
-                else:  # SELL
-                    markers.append({
-                        'time': candlestick_data[idx]['time'],
-                        'position': 'aboveBar',
-                        'color': '#ff4444',  # Bright red
-                        'shape': 'arrowDown',
-                        'text': f"SELL {sig['prob']:.0f}%",
-                        'size': 3  # Larger size
-                    })
-        
-        latest_price = float(df['Close'].iloc[-1])
-        prev_close = float(df['Close'].iloc[0])
-        change = latest_price - prev_close
-        change_pct = (change / prev_close) * 100
-        
-        latest_prob = float(probs[-1])
-        signal = "BUY" if latest_prob >= 52 else "SELL" if latest_prob <= 48 else "HOLD"
-        
-        buy_signals = [s for s in signal_points if s['type'] == 'BUY']
-        sell_signals = [s for s in signal_points if s['type'] == 'SELL']
-        
-        return jsonify({
-            'symbol': symbol,
-            'candlestick_data': candlestick_data,
-            'markers': markers,
-            'current_price': round(latest_price, 2),
-            'change': round(change, 2),
-            'change_pct': round(change_pct, 2),
-            'day_high': round(float(df['High'].max()), 2),
-            'day_low': round(float(df['Low'].min()), 2),
-            'volume': int(df['Volume'].sum()),
-            'probability': round(latest_prob, 1),
-            'signal': signal,
-            'total_signals': len(markers),
-            'buy_signals': len(buy_signals),
-            'sell_signals': len(sell_signals),
-            'has_model': model_info is not None
-        })
-    
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/live/<symbol>')
-def get_live_update(symbol):
-    try:
-        symbol = symbol.upper().strip()
-        model_info = load_model_for_symbol(symbol)
-        
-        df = yf.download(symbol, period="1d", interval="1m", progress=False, auto_adjust=True)
-        
-        if df.empty:
-            return jsonify({'error': 'Market closed'}), 404
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        
-        if hasattr(df.index, 'tz') and df.index.tz is not None:
-            df.index = df.index.tz_convert(None)
-        
-        latest = df.iloc[-1]
-        latest_price = float(latest['Close'])
-        
-        first_price = float(df['Close'].iloc[0])
-        change = latest_price - first_price
-        change_pct = (change / first_price) * 100
-        
-        if model_info and model_info['model'] and model_info['scaler'] and model_info['features']:
-            df_hist = yf.download(symbol, period="60d", interval="1d", progress=False, auto_adjust=True)
-            if isinstance(df_hist.columns, pd.MultiIndex):
-                df_hist.columns = df_hist.columns.get_level_values(0)
-            
-            df_combined = pd.concat([df_hist, df.tail(50)]).drop_duplicates()
-            df_combined = prepare_features_advanced(df_combined, symbol=symbol, market='US')
-            
-            try:
-                X = df_combined[model_info['features']].tail(1)
-                X_scaled = model_info['scaler'].transform(X)
-                prob = float(model_info['model'].predict_proba(X_scaled)[:, 1][0] * 100)
-            except:
-                prob = 50 + (change_pct * 2)
-                prob = max(10, min(90, prob))
+        feats = build_features(df, ctx, sem)
+        why = None
+        if model:
+            probs = predict_proba(model, feats)
+            buy_th, sell_th, cooldown = model.buy_th, model.sell_th, model.meta.get("cooldown", mk.cooldown)
+            why = explain(model, feats)
         else:
-            prob = 50 + (change_pct * 2)
-            prob = max(10, min(90, prob))
-        
-        signal = "BUY" if prob >= 52 else "SELL" if prob <= 48 else "HOLD"
-        
-        return jsonify({
-            'symbol': symbol,
-            'price': round(latest_price, 2),
-            'change': round(change, 2),
-            'change_pct': round(change_pct, 2),
-            'day_high': round(float(df['High'].max()), 2),
-            'day_low': round(float(df['Low'].min()), 2),
-            'volume': int(df['Volume'].sum()),
-            'probability': round(prob, 1),
-            'signal': signal,
-            'timestamp': datetime.now().strftime('%H:%M:%S')
-        })
-    
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+            probs = heuristic_proba(feats)
+            buy_th, sell_th, cooldown = HEURISTIC_BUY, HEURISTIC_SELL, mk.cooldown
+        probs = probs.copy()
+        probs[:WARMUP] = 0.5  # incomplete rolling windows: never signal on them
+        context = {"explanation": why, "headlines": _headlines(news, mk), "tone": _tone(news),
+                   "events": _events(earn), "semantic_in_model": bool(msem.get("enabled"))}
+        return {"df": df, "probs": probs, "model": model, "buy_th": buy_th, "sell_th": sell_th,
+                "cooldown": cooldown, "why": context}
+    return data_mod.cached(("analysis", symbol), ANALYSIS_TTL, build)
 
-if __name__ == '__main__':
-    print("\n🚀 Stock Trading AI - Dynamic Model Loading")
-    print("📱 Open: http://localhost:5000")
-    print("\n💡 Place model files as: SYMBOL_best_model.pkl")
-    print("   Example: AAPL_best_model.pkl, TSLA_best_model.pkl\n")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+
+def _prediction(a: dict) -> dict:
+    p = float(a["probs"][-1])
+    return {"probability": round(p * 100, 1), "signal": zone(p, a["buy_th"], a["sell_th"]),
+            "buy_threshold": round(a["buy_th"] * 100, 1), "sell_threshold": round(a["sell_th"] * 100, 1),
+            "source": "model" if a["model"] else "heuristic"}
+
+
+def _quote(df) -> dict:
+    last, prev = df.iloc[-1], df["Close"].iloc[-2]
+    price = float(last["Close"])
+    return {"price": round(price, 2), "prev_close": round(float(prev), 2),
+            "change": round(price - float(prev), 2), "change_pct": round((price / float(prev) - 1) * 100, 2),
+            "open": round(float(last["Open"]), 2), "high": round(float(last["High"]), 2),
+            "low": round(float(last["Low"]), 2), "volume": int(last["Volume"]),
+            "as_of": df.index[-1].date().isoformat()}
+
+
+def _context(symbol: str, mk: Market) -> dict:
+    return {"symbol": symbol, "name": display_name(symbol), "market": mk.code,
+            "exchange": exchange_label(symbol, mk), "currency": mk.currency, "locale": mk.locale,
+            "timezone": mk.tz}
+
+
+def _error(message: str, status: int):
+    return jsonify({"error": message}), status
+
+
+@app.route("/")
+def home():
+    nifty = [{"value": s, "label": n} for s, n in NIFTY.items()]
+    nifty += [{"value": s, "label": n} for s, n in IN_INDICES.items()]
+    us = [{"value": s, "label": n} for s, n in US_NAMES.items()]
+    return render_template("index.html", suggestions=nifty + us)
+
+
+@app.route("/api/historical/<symbol>")
+def historical(symbol):
+    try:
+        symbol, mk = resolve_symbol(symbol, request.args.get("market", "auto"))
+        a = analyze(symbol, mk)
+        df, probs = a["df"], a["probs"]
+        n = min(CHART_BARS, len(df))
+        df_w, probs_w = df.iloc[-n:], probs[-n:]
+
+        in_sample_until = a["model"].meta["in_sample_until"] if a["model"] else None
+        dates = [d.date().isoformat() for d in df_w.index]
+        candles = [{"time": t, "open": round(float(o), 2), "high": round(float(h), 2),
+                    "low": round(float(l), 2), "close": round(float(c), 2)}
+                   for t, o, h, l, c in zip(dates, df_w["Open"], df_w["High"], df_w["Low"], df_w["Close"])]
+
+        sigs = detect_signals(probs_w, a["buy_th"], a["sell_th"], a["cooldown"])
+        markers = []
+        for s in sigs:
+            t = dates[s["index"]]
+            oos = in_sample_until is None or t > in_sample_until
+            rgb = MARKER_COLORS[s["type"]]
+            markers.append({"time": t, "oos": oos, "type": s["type"],
+                            "position": "belowBar" if s["type"] == "BUY" else "aboveBar",
+                            "shape": "arrowUp" if s["type"] == "BUY" else "arrowDown",
+                            "color": f"rgba({rgb},{1 if oos else 0.3})",
+                            "text": f"{s['type']} {s['prob'] * 100:.0f}%"})
+
+        return jsonify({
+            **_context(symbol, mk),
+            "candles": candles, "markers": markers,
+            "quote": _quote(df), "prediction": _prediction(a),
+            "signals": {"total": len(markers), "buy": sum(m["type"] == "BUY" for m in markers),
+                        "sell": sum(m["type"] == "SELL" for m in markers),
+                        "out_of_sample": sum(m["oos"] for m in markers)},
+            "model": public_meta(a["model"].meta) if a["model"] else None,
+            "why": a["why"],
+        })
+    except SymbolError as exc:
+        return _error(str(exc), 400)
+    except NoData as exc:
+        return _error(str(exc), 404)
+    except Exception:
+        log.exception("historical failed for %s", symbol)
+        return _error("Internal error while loading data", 500)
+
+
+@app.route("/api/live/<symbol>")
+def live(symbol):
+    try:
+        symbol, mk = resolve_symbol(symbol, request.args.get("market", "auto"))
+        a = analyze(symbol, mk)
+        df = a["df"]
+        sess = data_mod.fetch_session(symbol, mk)
+        tz = ZoneInfo(mk.tz)
+
+        if sess is None:  # intraday feed unavailable: fall back to the last daily bar
+            q, bar, is_open = _quote(df), None, False
+        else:
+            prior = df["Close"][df.index < pd.Timestamp(sess["date"])]
+            prev = float(prior.iloc[-1]) if len(prior) else float(df["Close"].iloc[0])
+            price = sess["close"]
+            q = {"price": round(price, 2), "prev_close": round(prev, 2),
+                 "change": round(price - prev, 2), "change_pct": round((price / prev - 1) * 100, 2),
+                 "open": round(sess["open"], 2), "high": round(sess["high"], 2),
+                 "low": round(sess["low"], 2), "volume": sess["volume"], "as_of": sess["date"]}
+            bar = {"time": sess["date"], "open": q["open"], "high": q["high"], "low": q["low"], "close": q["price"]}
+            is_open = is_session_open(mk, sess["last_ts"])
+
+        return jsonify({**_context(symbol, mk), "quote": q, "bar": bar, "market_open": is_open,
+                        "prediction": _prediction(a), "server_time": datetime.now(tz).strftime("%H:%M:%S")})
+    except SymbolError as exc:
+        return _error(str(exc), 400)
+    except NoData as exc:
+        return _error(str(exc), 404)
+    except Exception:
+        log.exception("live failed for %s", symbol)
+        return _error("Internal error while loading data", 500)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "5000"))
+    debug = os.environ.get("FLASK_DEBUG") == "1"
+    print(f"Stock Trading AI -> http://{host}:{port}  (train models with: python train.py SYMBOL)")
+    app.run(host=host, port=port, debug=debug)
