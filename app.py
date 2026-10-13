@@ -4,17 +4,19 @@
     FLASK_DEBUG=1 python app.py
     HOST=0.0.0.0 python app.py   # only if you really want it reachable from your network
 """
+import hashlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, render_template, request
 
 from stockai import data as data_mod
-from stockai import semantic
+from stockai import semantic, xsection
 from stockai.explain import explain
 from stockai.features import WARMUP, build_features
 from stockai.markets import (IN_INDICES, NIFTY, US_NAMES, Market, SymbolError, display_name,
@@ -27,7 +29,7 @@ app = Flask(__name__)
 log = logging.getLogger("stockai")
 
 CHART_BARS = 750          # ~3 years of daily candles
-ANALYSIS_TTL = 300        # seconds; the daily model only changes when a new bar prints
+ANALYSIS_TTL = 90         # seconds; short so dip risk follows the live bar and fresh news
 NEW_NEWS_WINDOWS = 8      # max uncached weekly news windows one web request may fetch
 SHOWN_HEADLINES = 10
 MARKER_COLORS = {"BUY": "0,255,136", "SELL": "255,68,68"}
@@ -37,16 +39,58 @@ class NoData(Exception):
     pass
 
 
-def _headlines(news, mk: Market) -> list[dict]:
+def _headlines(news, mk: Market, limit: int = SHOWN_HEADLINES) -> list[dict]:
     if news is None or news.empty:
         return []
     tz = ZoneInfo(mk.tz)
     rows = []
-    for r in news.sort_values("ts", ascending=False).head(SHOWN_HEADLINES).itertuples():
+    for r in news.sort_values("ts", ascending=False).head(limit).itertuples():
         link = r.link if urlparse(r.link).scheme in ("http", "https") else ""
-        rows.append({"time": r.ts.tz_convert(tz).strftime("%d %b %H:%M"), "title": r.title,
-                     "source": r.source, "link": link, "score": round(float(r.score), 2)})
+        rows.append({"id": hashlib.sha1(r.title.encode("utf-8")).hexdigest()[:12],
+                     "time": r.ts.tz_convert(tz).strftime("%d %b %H:%M"), "iso": r.ts.isoformat(),
+                     "title": r.title, "source": r.source, "link": link, "score": round(float(r.score), 2)})
     return rows
+
+
+DIP_RATIO_ELEVATED, DIP_RATIO_HIGH = 1.4, 2.0   # model probability vs the stock's normal dip rate
+
+
+def _dip(model, feats, sigma, alert) -> dict:
+    """Chance of a drop of at least `threshold` below the last close within `horizon` sessions.
+
+    model: pooled (market-wide) dip model, or a per-symbol one as fallback. sigma: stock's daily volatility,
+    which sets how big a "dip" is for this stock under the pooled model."""
+    level = "LOW"
+    out = {"model": False, "news_alert": alert}
+    if model:
+        m, h = model.meta, model.meta["holdout"]
+        p = float(predict_proba(model, feats)[-1])
+        base = float(h["base_rate"] or m["train_base_rate"])
+        ratio = p / base if base > 0 else 1.0
+        level = "HIGH" if ratio >= DIP_RATIO_HIGH else "ELEVATED" if ratio >= DIP_RATIO_ELEVATED else "LOW"
+        if m.get("kind") == "dip_pooled":
+            thr = m["k_sigma"] * sigma * (m["horizon_days"] ** 0.5) if sigma == sigma else float("nan")
+            lo, hi = h["auc_ci90"]
+            auc_text = f"{h['auc']:.3f} (90% CI {lo:.3f}-{hi:.3f})"
+            vol_auc = h["volatility_regime_only_auc"]
+        else:
+            thr = abs(m["threshold"])
+            auc_text, vol_auc = f"{h['auc']:.3f}", h["volatility_only_auc"]
+        ex = explain(model, feats, top=4)
+        out.update({"model": True, "pooled": m.get("kind") == "dip_pooled", "probability": round(p * 100, 1),
+                    "base_rate": round(base * 100, 1),
+                    "threshold_pct": None if thr != thr else round(thr * 100, 1), "horizon": m["horizon_days"],
+                    "has_skill": m["has_skill"], "auc_text": auc_text, "volatility_only_auc": round(vol_auc, 3),
+                    "lift": None if h["lift_top_quintile"] is None else round(h["lift_top_quintile"], 2),
+                    "safest_rate": None if h.get("dip_rate_when_bottom_quintile") is None
+                    else round(h["dip_rate_when_bottom_quintile"] * 100, 1),
+                    "top_rate": None if h.get("dip_rate_when_top_quintile") is None
+                    else round(h["dip_rate_when_top_quintile"] * 100, 1),
+                    "drivers": (ex or {}).get("drivers", [])})
+    if alert and alert["level"] == "high" and level == "LOW":
+        level = "ELEVATED"          # a cluster of strongly negative headlines overrides a calm model
+    out["level"] = level
+    return out
 
 
 def _events(earn) -> dict:
@@ -82,6 +126,7 @@ def analyze(symbol: str, mk: Market) -> dict:
             raise NoData(f"No price data for {symbol}. Check the symbol and market.")
         ctx = data_mod.align_context(data_mod.fetch_context(mk), df.index)
         model = load_model(symbol)
+        dip_model = load_model(f"POOLED_{mk.code}__dip") or load_model(symbol + "__dip")
         msem = (model.meta.get("semantic") or {}) if model else {}
 
         sem = news = earn = None
@@ -100,7 +145,25 @@ def analyze(symbol: str, mk: Market) -> dict:
         except Exception:
             log.exception("semantic layer failed for %s; continuing without it", symbol)
 
+        if earn is None and not symbol.startswith("^"):
+            earn = data_mod.fetch_earnings(symbol)
+        alert = None
+        try:   # freshest headlines drive the news-alert part of dip risk
+            alert = semantic.news_alert(semantic.latest_news(symbol, mk, semantic.get_scorer(msem.get("scorer"))))
+        except Exception:
+            log.exception("latest news failed for %s", symbol)
+
         feats = build_features(df, ctx, sem)
+        dip_feats, sigma = feats, float("nan")
+        if dip_model:
+            if dip_model.meta.get("kind") == "dip_pooled":
+                events = sem if sem is not None else pd.concat(
+                    [pd.DataFrame(np.nan, index=df.index, columns=semantic.NEWS_FEATURES),
+                     semantic.event_features(df.index, earn), pd.DataFrame(np.nan, index=df.index, columns=semantic.ANALYST_FEATURES)],
+                    axis=1)
+                dip_feats = xsection.stock_frame(symbol, df, ctx, events).droplevel(1)
+            sigma = float(df["Close"].pct_change().rolling(60).std().iloc[-1])
+        dip = _dip(dip_model, dip_feats, sigma, alert)
         why = None
         if model:
             probs = predict_proba(model, feats)
@@ -114,7 +177,7 @@ def analyze(symbol: str, mk: Market) -> dict:
         context = {"explanation": why, "headlines": _headlines(news, mk), "tone": _tone(news),
                    "events": _events(earn), "semantic_in_model": bool(msem.get("enabled"))}
         return {"df": df, "probs": probs, "model": model, "buy_th": buy_th, "sell_th": sell_th,
-                "cooldown": cooldown, "why": context}
+                "cooldown": cooldown, "why": context, "dip": dip}
     return data_mod.cached(("analysis", symbol), ANALYSIS_TTL, build)
 
 
@@ -188,7 +251,7 @@ def historical(symbol):
                         "sell": sum(m["type"] == "SELL" for m in markers),
                         "out_of_sample": sum(m["oos"] for m in markers)},
             "model": public_meta(a["model"].meta) if a["model"] else None,
-            "why": a["why"],
+            "why": a["why"], "dip": a["dip"],
         })
     except SymbolError as exc:
         return _error(str(exc), 400)
@@ -222,7 +285,7 @@ def live(symbol):
             is_open = is_session_open(mk, sess["last_ts"])
 
         return jsonify({**_context(symbol, mk), "quote": q, "bar": bar, "market_open": is_open,
-                        "prediction": _prediction(a), "server_time": datetime.now(tz).strftime("%H:%M:%S")})
+                        "prediction": _prediction(a), "dip": a["dip"], "server_time": datetime.now(tz).strftime("%H:%M:%S")})
     except SymbolError as exc:
         return _error(str(exc), 400)
     except NoData as exc:
@@ -230,6 +293,28 @@ def live(symbol):
     except Exception:
         log.exception("live failed for %s", symbol)
         return _error("Internal error while loading data", 500)
+
+
+@app.route("/api/news/<symbol>")
+def news(symbol):
+    """Freshest scored headlines for the company plus a bad-news alert. Cheap to poll (45s shared cache)."""
+    try:
+        symbol, mk = resolve_symbol(symbol, request.args.get("market", "auto"))
+        m = load_model(symbol) or load_model(f"POOLED_{mk.code}__dip")
+        scorer = semantic.get_scorer(((m.meta.get("semantic") or {}).get("scorer")) if m else None)
+        df = semantic.latest_news(symbol, mk, scorer, hours=72)
+        day = df[df["ts"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=24)] if len(df) else df
+        tone = None if day.empty else {"mean": round(float(day["score"].mean()), 2), "count": int(len(day)),
+                                       "positive": int((day["score"] > 0.3).sum()),
+                                       "negative": int((day["score"] < -0.3).sum())}
+        return jsonify({"symbol": symbol, "headlines": _headlines(df, mk, limit=25), "tone_24h": tone,
+                        "alert": semantic.news_alert(df), "scorer": scorer.name,
+                        "server_time": datetime.now(ZoneInfo(mk.tz)).strftime("%H:%M:%S")})
+    except SymbolError as exc:
+        return _error(str(exc), 400)
+    except Exception:
+        log.exception("news failed for %s", symbol)
+        return _error("Internal error while loading news", 500)
 
 
 if __name__ == "__main__":

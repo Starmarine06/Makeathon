@@ -48,6 +48,15 @@ SPEC = {
     "vol_rel20": ("Volume vs. 20-day avg (log)", "technical", _num),
     "dow": ("Day of week", "technical", lambda v: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][int(v) % 7]),
 }
+SPEC.update({
+    "mom_12_1": ("12-month momentum (skip last month)", "technical", _pct),
+    "ret_63": ("3-month return", "technical", _pct), "ret_126": ("6-month return", "technical", _pct),
+    "vol_10": ("10-day volatility", "technical", _pct), "vol_20": ("20-day volatility", "technical", _pct),
+    "vol_60": ("60-day volatility", "technical", _pct), "idio_vol": ("Stock-specific volatility", "technical", _pct),
+    "atr14_pct": ("Average daily range", "technical", _pct), "bb_width": ("Bollinger band width", "technical", _pct),
+    "dist_high_252": ("Distance below 1-year high", "technical", _pct),
+    "dist_low_252": ("Distance above 1-year low", "technical", _pct),
+})
 for n in (1, 2, 3, 5, 10, 20):
     SPEC[f"ret_{n}"] = (f"{n}-day return", "technical", _pct)
 for n in (10, 20, 50):

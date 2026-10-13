@@ -77,3 +77,21 @@ def test_backtest_charges_turnover_and_matches_hand_calc():
     assert paid["net"]["total_return"] == pytest.approx((1.01 - 0.01) * 1.01 ** 3 - 1, rel=1e-6)
     assert paid["turnover_per_rebalance"] == pytest.approx(0.25)
     assert free["benchmark"]["total_return"] == pytest.approx(1.005 ** 4 - 1)
+
+
+def test_pooled_dip_labels_are_vol_scaled_and_model_finds_planted_risk():
+    from stockai import pooled
+    p = synthetic_panel(1100, 20, seed=2)
+    rng = np.random.default_rng(5)
+    p["vol_60"] = 0.01
+    risk = p["bb_pos"].to_numpy()                       # planted: high bb_pos today -> deeper drop ahead
+    p["dd"] = -np.abs(rng.normal(0, 0.02, len(p))) - 0.012 * np.clip(risk, 0, None)
+    lab = pooled.labels(p)
+    assert set(lab.dropna().unique()) <= {0.0, 1.0}
+    cut = pooled.dip_threshold(0.01)
+    assert cut == pytest.approx(-1.5 * 0.01 * 5 ** 0.5)
+    assert ((p["dd"] <= cut).astype(float)[lab.notna()] == lab.dropna()).all()
+    _, meta = pooled.fit_pooled(p, ["bb_pos", "rsi14", "ret_5", "vol_regime"], US)
+    h = meta["holdout"]
+    assert meta["kind"] == "dip_pooled" and h["auc"] > 0.6 and meta["has_skill"]
+    assert h["dip_rate_when_top_quintile"] > h["dip_rate_when_bottom_quintile"]
