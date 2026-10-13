@@ -1,0 +1,14 @@
+flask>=3.0
+yfinance>=0.2.60
+pandas>=2.2
+numpy>=1.26
+scikit-learn>=1.4
+xgboost>=2.0
+tzdata
+pytest>=8.0
+requests>=2.31
+feedparser>=6.0
+vaderSentiment>=3.3
+# FinBERT headline scorer (optional; falls back to VADER if missing)
+transformers>=4.40
+torch>=2.2

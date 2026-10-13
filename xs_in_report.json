@@ -1,0 +1,102 @@
+{
+  "model": {
+    "periods": 332,
+    "net": {
+      "ann_return": 0.1645991067999797,
+      "ann_vol": 0.20819005011591313,
+      "sharpe": 0.8397791764659663,
+      "max_drawdown": -0.3993067113931732,
+      "total_return": 1.7285018452085765
+    },
+    "gross_sharpe": 1.1345402084744056,
+    "benchmark": {
+      "ann_return": 0.1883288961500338,
+      "ann_vol": 0.16945126444569666,
+      "sharpe": 1.1062366920329776,
+      "max_drawdown": -0.31312067259546605,
+      "total_return": 2.1162361769427727
+    },
+    "turnover_per_rebalance": 0.505722891566265,
+    "hit_rate_vs_benchmark": 0.4819277108433735,
+    "excess_per_period_t": -0.3627170180683942,
+    "vol_targeted": {
+      "ann_return": 0.11609303065431242,
+      "ann_vol": 0.159982330079627,
+      "sharpe": 0.7679503428444978,
+      "max_drawdown": -0.26810539267385225,
+      "total_return": 1.0616592921847525,
+      "avg_exposure": 0.8388565533224266
+    },
+    "ic": {
+      "mean_ic": 0.023020327074690428,
+      "ic_t": 2.449403374082175,
+      "pct_positive": 0.5542168674698795,
+      "n": 332
+    }
+  },
+  "momentum_baseline": {
+    "periods": 332,
+    "net": {
+      "ann_return": 0.13634586970996376,
+      "ann_vol": 0.20269779742276248,
+      "sharpe": 0.7353893237257741,
+      "max_drawdown": -0.3556958726203847,
+      "total_return": 1.3209439549570843
+    },
+    "gross_sharpe": 0.8070295877943451,
+    "benchmark": {
+      "ann_return": 0.1883288961500338,
+      "ann_vol": 0.16945126444569666,
+      "sharpe": 1.1062366920329776,
+      "max_drawdown": -0.31312067259546605,
+      "total_return": 2.1162361769427727
+    },
+    "turnover_per_rebalance": 0.11957831325301206,
+    "hit_rate_vs_benchmark": 0.47289156626506024,
+    "excess_per_period_t": -1.0005986903311828,
+    "vol_targeted": {
+      "ann_return": 0.1231437318129418,
+      "ann_vol": 0.15861254189310672,
+      "sharpe": 0.8124457579869753,
+      "max_drawdown": -0.23315831717373736,
+      "total_return": 1.1489820106862205,
+      "avg_exposure": 0.8367935314583198
+    },
+    "ic": {
+      "mean_ic": 0.008245857943279849,
+      "ic_t": 0.6748458369448229,
+      "pct_positive": 0.5240963855421686,
+      "n": 332
+    }
+  },
+  "oos_start": "2020-01-27",
+  "oos_end": "2026-10-12",
+  "names": 48,
+  "features": [
+    "mom_12_1",
+    "ret_126",
+    "ret_63",
+    "ret_20",
+    "ret_10",
+    "ret_5",
+    "ret_1",
+    "vol_20",
+    "vol_60",
+    "vol_regime",
+    "dist_high_252",
+    "dist_low_252",
+    "dist_sma50",
+    "rsi14",
+    "vol_rel20",
+    "atr14_pct",
+    "rel_ret_5",
+    "bb_pos",
+    "idio_vol",
+    "days_to_earn",
+    "days_since_earn",
+    "last_surprise"
+  ],
+  "k": 10,
+  "horizon": 5,
+  "cost_bps_per_side": 12.0
+}

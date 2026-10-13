@@ -1,3 +1,9 @@
 /gdelt_cache
 /RELIANCE_NS_analysis.png
 /RELIANCE_NS_model.pkl
+/models/*
+__pycache__/
+.pytest_cache/
+/cache
+*.log
+RESUME.md

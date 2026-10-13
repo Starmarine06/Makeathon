@@ -3,613 +3,408 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stock Trading AI Pro</title>
+    <title>Stock Trading AI</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
+        :root {
+            --bg: #0f1419; --panel: rgba(30, 34, 45, 0.95); --line: rgba(103, 126, 234, 0.3);
+            --text: #d1d4dc; --muted: #8a8d98; --accent: #677eea;
+            --up: #26a69a; --down: #ef5350; --warn: #f0b429;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
+        html, body { height: 100%; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
-            color: #d1d4dc;
-            overflow: hidden;
+            color: var(--text); display: flex; flex-direction: column; overflow: hidden;
         }
-        
-        body::before {
-            content: '';
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(45deg, rgba(38,166,154,0.05), rgba(239,83,80,0.05), rgba(103,126,234,0.05));
-            background-size: 400% 400%;
-            animation: gradientShift 15s ease infinite;
-            z-index: -1;
-        }
-        
-        @keyframes gradientShift {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        
         .header {
-            background: rgba(30, 34, 45, 0.95);
-            backdrop-filter: blur(10px);
-            padding: 15px 25px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 2px solid rgba(103, 126, 234, 0.3);
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            background: var(--panel); padding: 12px 20px; border-bottom: 2px solid var(--line);
+            display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
         }
-        
-        .symbol-info {
-            display: flex;
-            align-items: center;
-            gap: 25px;
+        .symbol-info { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+        .symbol-name { font-size: 22px; font-weight: 700; color: #fff; }
+        .symbol-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .badge-mkt {
+            font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px;
+            background: rgba(103, 126, 234, 0.2); color: #aab6ff; margin-left: 8px; vertical-align: middle;
         }
-        
-        .symbol-name {
-            font-size: 24px;
-            font-weight: 700;
-            color: #fff;
-            text-shadow: 0 2px 10px rgba(103, 126, 234, 0.5);
+        .price-info { display: flex; align-items: baseline; gap: 12px; }
+        .price { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .price.up, .change.up { color: var(--up); }
+        .price.down, .change.down { color: var(--down); }
+        .change { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .symbol-input, .market-select {
+            padding: 9px 12px; background: rgba(42, 46, 57, 0.9); border: 2px solid var(--line);
+            border-radius: 10px; color: var(--text); font-size: 15px; font-weight: 600;
         }
-        
-        .price-info {
-            display: flex;
-            align-items: baseline;
-            gap: 12px;
+        .symbol-input { text-transform: uppercase; width: 150px; }
+        .symbol-input:focus, .market-select:focus { outline: none; border-color: var(--accent); }
+        .signal-badge { padding: 10px 18px; border-radius: 10px; font-weight: 700; font-size: 16px; color: #fff; }
+        .signal-badge.buy { background: linear-gradient(135deg, #26a69a, #1e8e82); }
+        .signal-badge.sell { background: linear-gradient(135deg, #ef5350, #d32f2f); }
+        .signal-badge.hold { background: linear-gradient(135deg, #6b7280, #4b5563); }
+        .signal-count { font-size: 12px; color: var(--muted); }
+
+        .model-bar {
+            background: rgba(20, 24, 33, 0.95); border-bottom: 1px solid var(--line); padding: 8px 20px;
+            font-size: 12.5px; display: flex; gap: 8px 18px; flex-wrap: wrap; align-items: center; line-height: 1.5;
         }
-        
-        .price {
-            font-size: 32px;
-            font-weight: 700;
-            text-shadow: 0 0 20px currentColor;
-            transition: all 0.3s ease;
+        .model-bar b { color: #fff; font-weight: 600; }
+        .tag { padding: 2px 9px; border-radius: 999px; font-weight: 700; font-size: 11px; }
+        .tag.warn { background: rgba(240, 180, 41, 0.18); color: var(--warn); }
+        .tag.ok { background: rgba(38, 166, 154, 0.2); color: var(--up); }
+        .tag.info { background: rgba(103, 126, 234, 0.2); color: #aab6ff; }
+
+        .main { flex: 1; min-height: 0; display: flex; }
+        .chart-wrap { flex: 1; min-width: 0; position: relative; }
+        #chart { position: absolute; inset: 0; }
+        .why {
+            width: 340px; flex-shrink: 0; overflow-y: auto; background: rgba(20, 24, 33, 0.97);
+            border-left: 2px solid var(--line); padding: 14px 16px; font-size: 12.5px; line-height: 1.45;
         }
-        
-        .price.up { 
-            color: #26a69a;
-            animation: priceUp 0.5s ease;
-        }
-        
-        .price.down { 
-            color: #ef5350;
-            animation: priceDown 0.5s ease;
-        }
-        
-        @keyframes priceUp {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(1.1); }
-        }
-        
-        @keyframes priceDown {
-            0%, 100% { transform: scale(1); }
-            50% { transform: scale(0.95); }
-        }
-        
-        .change {
-            font-size: 16px;
-            padding: 6px 12px;
-            border-radius: 8px;
-            font-weight: 600;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-        }
-        
-        .change.up { 
-            background: linear-gradient(135deg, #26a69a 0%, #1e8e82 100%);
-            color: #fff;
-            animation: pulseGreen 2s infinite;
-        }
-        
-        .change.down { 
-            background: linear-gradient(135deg, #ef5350 0%, #d32f2f 100%);
-            color: #fff;
-            animation: pulseRed 2s infinite;
-        }
-        
-        @keyframes pulseGreen {
-            0%, 100% { box-shadow: 0 4px 15px rgba(38, 166, 154, 0.3); }
-            50% { box-shadow: 0 4px 25px rgba(38, 166, 154, 0.6); }
-        }
-        
-        @keyframes pulseRed {
-            0%, 100% { box-shadow: 0 4px 15px rgba(239, 83, 80, 0.3); }
-            50% { box-shadow: 0 4px 25px rgba(239, 83, 80, 0.6); }
-        }
-        
-        .controls {
-            display: flex;
-            gap: 15px;
-            align-items: center;
-        }
-        
-        .symbol-input {
-            padding: 10px 16px;
-            background: rgba(42, 46, 57, 0.9);
-            border: 2px solid rgba(103, 126, 234, 0.3);
-            border-radius: 10px;
-            color: #d1d4dc;
-            font-size: 16px;
-            font-weight: 600;
-            text-transform: uppercase;
-            width: 120px;
-            transition: all 0.3s ease;
-        }
-        
-        .symbol-input:focus {
-            outline: none;
-            border-color: #677eea;
-            box-shadow: 0 0 25px rgba(103, 126, 234, 0.4);
-        }
-        
-        .signal-badge {
-            padding: 12px 24px;
-            border-radius: 12px;
-            font-weight: 700;
-            font-size: 18px;
-            box-shadow: 0 6px 25px rgba(0,0,0,0.4);
-            transition: all 0.3s ease;
-        }
-        
-        .signal-badge.buy { 
-            background: linear-gradient(135deg, #26a69a 0%, #1e8e82 100%);
-            color: #fff;
-            animation: buyPulse 1.5s ease-in-out infinite;
-        }
-        
-        .signal-badge.sell { 
-            background: linear-gradient(135deg, #ef5350 0%, #d32f2f 100%);
-            color: #fff;
-            animation: sellPulse 1.5s ease-in-out infinite;
-        }
-        
-        .signal-badge.hold { 
-            background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
-            color: #fff;
-        }
-        
-        @keyframes buyPulse {
-            0%, 100% { 
-                box-shadow: 0 6px 25px rgba(38, 166, 154, 0.4);
-                transform: scale(1);
-            }
-            50% { 
-                box-shadow: 0 6px 35px rgba(38, 166, 154, 0.7);
-                transform: scale(1.05);
-            }
-        }
-        
-        @keyframes sellPulse {
-            0%, 100% { 
-                box-shadow: 0 6px 25px rgba(239, 83, 80, 0.4);
-                transform: scale(1);
-            }
-            50% { 
-                box-shadow: 0 6px 35px rgba(239, 83, 80, 0.7);
-                transform: scale(1.05);
-            }
-        }
-        
-        .signal-count {
-            font-size: 13px;
-            color: #26a69a;
-            background: rgba(38, 166, 154, 0.15);
-            padding: 8px 14px;
-            border-radius: 8px;
-            font-weight: 600;
-            border: 1px solid rgba(38, 166, 154, 0.3);
-        }
-        
-        #chart {
-            width: 100%;
-            height: calc(100vh - 140px);
-            background: rgba(30, 34, 45, 0.5);
-            backdrop-filter: blur(10px);
-            position: relative;
-        }
-        
-        .stats-bar {
-            background: rgba(30, 34, 45, 0.95);
-            backdrop-filter: blur(10px);
-            padding: 12px 25px;
-            display: flex;
-            gap: 35px;
-            border-top: 2px solid rgba(103, 126, 234, 0.3);
-            font-size: 14px;
-            position: fixed;
-            bottom: 0;
-            width: 100%;
-            box-shadow: 0 -4px 20px rgba(0,0,0,0.3);
-        }
-        
-        .stat-item {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        
-        .stat-label {
-            color: #787b86;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 11px;
-        }
-        
-        .stat-value {
-            font-weight: 700;
-            color: #d1d4dc;
-            font-size: 15px;
-        }
-        
+        .why h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 8px; }
+        .why h3:first-child { margin-top: 0; }
+        .why .lead { font-size: 13.5px; color: #fff; }
+        .why .note { color: var(--muted); font-size: 11.5px; }
+        .grp, .drv { display: grid; align-items: center; gap: 8px; margin-bottom: 5px; }
+        .grp { grid-template-columns: 118px 1fr 52px; }
+        .bar-track { position: relative; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; }
+        .bar-track::after { content: ''; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: rgba(255,255,255,0.25); }
+        .bar { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+        .bar.pos { left: 50%; background: var(--up); } .bar.neg { right: 50%; background: var(--down); }
+        .pp { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .pp.pos { color: var(--up); } .pp.neg { color: var(--down); }
+        .drv { grid-template-columns: 1fr auto; }
+        .drv .val { color: var(--muted); }
+        .headline { padding: 7px 0; border-top: 1px solid rgba(255,255,255,0.06); display: grid; grid-template-columns: 40px 1fr; gap: 8px; }
+        .chip { font-weight: 700; font-size: 11px; text-align: center; border-radius: 6px; padding: 2px 0; height: fit-content; font-variant-numeric: tabular-nums; }
+        .chip.pos { background: rgba(38,166,154,.2); color: var(--up); } .chip.neg { background: rgba(239,83,80,.2); color: var(--down); }
+        .chip.neu { background: rgba(255,255,255,.08); color: var(--muted); }
+        .headline a { color: var(--text); text-decoration: none; } .headline a:hover { color: #fff; text-decoration: underline; }
+        .headline .src { color: var(--muted); font-size: 11px; }
+        @media (max-width: 900px) { .main { flex-direction: column; } .why { width: auto; max-height: 45%; border-left: 0; border-top: 2px solid var(--line); } }
         .legend {
-            position: absolute;
-            top: 15px;
-            right: 20px;
-            background: rgba(30, 34, 45, 0.95);
-            backdrop-filter: blur(15px);
-            padding: 15px 20px;
-            border-radius: 12px;
-            border: 2px solid rgba(103, 126, 234, 0.3);
-            z-index: 10;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+            position: absolute; top: 12px; left: 14px; z-index: 10; background: var(--panel);
+            padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); font-size: 12px;
         }
-        
-        .legend-title {
-            font-size: 13px;
-            font-weight: 700;
-            color: #677eea;
-            margin-bottom: 12px;
-            text-transform: uppercase;
+        .legend div { display: flex; align-items: center; gap: 8px; }
+        .legend div + div { margin-top: 6px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .dot.buy { background: #00ff88; } .dot.sell { background: #ff4444; }
+        .dot.faint { opacity: 0.3; }
+
+        .stats-bar {
+            background: var(--panel); padding: 10px 20px; display: flex; gap: 8px 28px; flex-wrap: wrap;
+            border-top: 2px solid var(--line); font-size: 13px; align-items: center;
         }
-        
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 10px;
-            font-size: 13px;
-            font-weight: 600;
-        }
-        
-        .legend-item:last-child {
-            margin-bottom: 0;
-        }
-        
-        .legend-icon {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-            font-weight: bold;
-        }
-        
-        .legend-icon.buy {
-            background: linear-gradient(135deg, #00ff88, #00cc6a);
-            color: #000;
-            animation: glowGreen 2s infinite;
-        }
-        
-        .legend-icon.sell {
-            background: linear-gradient(135deg, #ff4444, #cc0000);
-            color: #fff;
-            animation: glowRed 2s infinite;
-        }
-        
-        @keyframes glowGreen {
-            0%, 100% { box-shadow: 0 0 10px rgba(0, 255, 136, 0.5); }
-            50% { box-shadow: 0 0 25px rgba(0, 255, 136, 0.8); }
-        }
-        
-        @keyframes glowRed {
-            0%, 100% { box-shadow: 0 0 10px rgba(255, 68, 68, 0.5); }
-            50% { box-shadow: 0 0 25px rgba(255, 68, 68, 0.8); }
-        }
-        
+        .stat-item { display: flex; gap: 8px; align-items: baseline; }
+        .stat-label { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; }
+        .stat-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+        .stat-item.disclaimer { margin-left: auto; color: var(--muted); font-size: 11px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; display: inline-block; margin-right: 6px; }
+        .status-dot.open { background: #00ff88; }
+
         .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(15, 20, 25, 0.9);
-            backdrop-filter: blur(5px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.3s ease;
+            position: fixed; inset: 0; background: rgba(15, 20, 25, 0.85); display: flex;
+            align-items: center; justify-content: center; z-index: 1000; opacity: 0;
+            pointer-events: none; transition: opacity 0.2s ease;
         }
-        
-        .loading-overlay.active {
-            opacity: 1;
-            pointer-events: all;
-        }
-        
+        .loading-overlay.active { opacity: 1; pointer-events: all; }
         .loader {
-            width: 60px;
-            height: 60px;
-            border: 5px solid rgba(103, 126, 234, 0.2);
-            border-top-color: #677eea;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
+            width: 48px; height: 48px; border: 5px solid rgba(103, 126, 234, 0.2);
+            border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite;
         }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error-banner { display: none; background: rgba(239, 83, 80, 0.15); color: #ff8a87; padding: 8px 20px; font-size: 13px; }
+        .error-banner.show { display: block; }
+        @media (max-width: 700px) { .symbol-input { width: 120px; } .price { font-size: 24px; } }
     </style>
 </head>
 <body>
-    <div class="loading-overlay" id="loadingOverlay">
-        <div class="loader"></div>
-    </div>
+    <div class="loading-overlay" id="loadingOverlay"><div class="loader"></div></div>
 
     <div class="header">
         <div class="symbol-info">
-            <div class="symbol-name" id="symbolName">📊 AAPL</div>
+            <div>
+                <div class="symbol-name"><span id="symbolName">—</span><span class="badge-mkt" id="marketBadge"></span></div>
+                <div class="symbol-sub" id="companyName">&nbsp;</div>
+            </div>
             <div class="price-info">
-                <div class="price" id="price">Loading...</div>
+                <div class="price" id="price">…</div>
                 <div class="change" id="change">--</div>
             </div>
         </div>
         <div class="controls">
-            <input type="text" class="symbol-input" id="symbolInput" value="AAPL" placeholder="Symbol">
-            <div class="signal-badge hold" id="signal">⚪ HOLD</div>
-            <div class="signal-count" id="signalCount">0 signals</div>
-        </div>
-    </div>
-    
-    <div id="chart"></div>
-    
-    <div class="legend">
-        <div class="legend-title">🎯 TRADING SIGNALS</div>
-        <div class="legend-item">
-            <div class="legend-icon buy">▲</div>
-            <span>BUY (Strong Uptrend)</span>
-        </div>
-        <div class="legend-item">
-            <div class="legend-icon sell">▼</div>
-            <span>SELL (Strong Downtrend)</span>
-        </div>
-    </div>
-    
-    <div class="stats-bar">
-        <div class="stat-item">
-            <span class="stat-label">High</span>
-            <span class="stat-value" id="dayHigh">--</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">Low</span>
-            <span class="stat-value" id="dayLow">--</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">Volume</span>
-            <span class="stat-value" id="volume">--</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">ML Confidence</span>
-            <span class="stat-value" id="mlConf">--</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">Updated</span>
-            <span class="stat-value" id="timestamp">--</span>
+            <input type="text" class="symbol-input" id="symbolInput" list="symbolList" value="RELIANCE"
+                   placeholder="e.g. TCS or AAPL" autocomplete="off" spellcheck="false" aria-label="Stock symbol">
+            <datalist id="symbolList">
+                {% for s in suggestions %}<option value="{{ s.value }}">{{ s.label }}</option>{% endfor %}
+            </datalist>
+            <select class="market-select" id="marketSelect" aria-label="Market">
+                <option value="auto">Auto</option>
+                <option value="in">🇮🇳 India</option>
+                <option value="us">🇺🇸 US</option>
+            </select>
+            <div class="signal-badge hold" id="signal">HOLD</div>
+            <div class="signal-count" id="signalCount"></div>
         </div>
     </div>
 
+    <div class="error-banner" id="errorBanner" role="alert"></div>
+    <div class="model-bar" id="modelBar"></div>
+
+    <div class="main">
+    <div class="chart-wrap">
+        <div id="chart"></div>
+        <div class="legend">
+            <div><span class="dot buy"></span> BUY — probability entered the buy zone</div>
+            <div><span class="dot sell"></span> SELL — probability entered the sell zone</div>
+            <div><span class="dot buy faint"></span> Faded = in-sample (model trained on these bars)</div>
+        </div>
+    </div>
+    <aside class="why" id="why" aria-label="Why this prediction"></aside>
+    </div>
+
+    <div class="stats-bar">
+        <div class="stat-item"><span class="stat-label">Open</span><span class="stat-value" id="dayOpen">--</span></div>
+        <div class="stat-item"><span class="stat-label">High</span><span class="stat-value" id="dayHigh">--</span></div>
+        <div class="stat-item"><span class="stat-label">Low</span><span class="stat-value" id="dayLow">--</span></div>
+        <div class="stat-item"><span class="stat-label">Volume</span><span class="stat-value" id="volume">--</span></div>
+        <div class="stat-item"><span class="stat-label">P(next close up)</span><span class="stat-value" id="mlConf">--</span></div>
+        <div class="stat-item"><span class="stat-label" id="statusLabel">Market</span><span class="stat-value"><span class="status-dot" id="statusDot"></span><span id="statusText">--</span></span></div>
+        <div class="stat-item"><span class="stat-label">Updated</span><span class="stat-value" id="timestamp">--</span></div>
+        <div class="stat-item disclaimer">Educational use only — not investment advice.</div>
+    </div>
+
     <script>
-        let chart;
-        let candlestickSeries;
-        let currentSymbol = 'AAPL';
-        let updateInterval;
-        
-        function showLoading(show) {
-            document.getElementById('loadingOverlay').classList.toggle('active', show);
+        const $ = (id) => document.getElementById(id);
+        let chart, series;
+        let ctx = { currency: 'INR', locale: 'en-IN' };
+        let requestToken = 0;      // ignore responses from a symbol the user already left
+        let pollTimer = null;
+        let controller = null;
+
+        const money = (v) => new Intl.NumberFormat(ctx.locale, {
+            style: 'currency', currency: ctx.currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+
+        function fmtVolume(v) {
+            if (!v) return '—';
+            if (ctx.locale === 'en-IN') {           // Indian convention: lakh / crore
+                if (v >= 1e7) return (v / 1e7).toFixed(2) + ' Cr';
+                if (v >= 1e5) return (v / 1e5).toFixed(2) + ' L';
+                return v.toLocaleString('en-IN');
+            }
+            if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+            if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+            if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+            return String(v);
         }
-        
+
+        const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        const pct = (v, d = 1) => (v * 100).toFixed(d) + '%';
+        const signed = (v, d = 1) => (v >= 0 ? '+' : '') + (v * 100).toFixed(d) + '%';
+
+        function showLoading(show) { $('loadingOverlay').classList.toggle('active', show); }
+        function showError(msg) {
+            const el = $('errorBanner');
+            el.textContent = msg || '';
+            el.classList.toggle('show', !!msg);
+        }
+
         function initChart() {
-            const chartContainer = document.getElementById('chart');
-            
-            chart = LightweightCharts.createChart(chartContainer, {
-                width: chartContainer.clientWidth,
-                height: chartContainer.clientHeight,
-                layout: {
-                    background: { color: 'transparent' },
-                    textColor: '#d1d4dc',
-                },
-                grid: {
-                    vertLines: { 
-                        color: 'rgba(42, 46, 57, 0.5)',
-                        style: LightweightCharts.LineStyle.Dotted,
-                    },
-                    horzLines: { 
-                        color: 'rgba(42, 46, 57, 0.5)',
-                        style: LightweightCharts.LineStyle.Dotted,
-                    },
-                },
-                timeScale: {
-                    borderColor: 'rgba(103, 126, 234, 0.3)',
-                    timeVisible: true,
-                },
-                rightPriceScale: {
-                    borderColor: 'rgba(103, 126, 234, 0.3)',
-                    scaleMargins: {
-                        top: 0.1,
-                        bottom: 0.1,
-                    },
-                },
-                crosshair: {
-                    mode: LightweightCharts.CrosshairMode.Normal,
-                    vertLine: {
-                        color: '#677eea',
-                        width: 2,
-                        style: LightweightCharts.LineStyle.Solid,
-                        labelBackgroundColor: '#677eea',
-                    },
-                    horzLine: {
-                        color: '#677eea',
-                        width: 2,
-                        style: LightweightCharts.LineStyle.Solid,
-                        labelBackgroundColor: '#677eea',
-                    },
-                },
+            const el = $('chart');
+            chart = LightweightCharts.createChart(el, {
+                layout: { background: { color: 'transparent' }, textColor: '#d1d4dc' },
+                grid: { vertLines: { color: 'rgba(42,46,57,0.5)' }, horzLines: { color: 'rgba(42,46,57,0.5)' } },
+                timeScale: { borderColor: 'rgba(103,126,234,0.3)' },
+                rightPriceScale: { borderColor: 'rgba(103,126,234,0.3)', scaleMargins: { top: 0.1, bottom: 0.1 } },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
             });
-            
-            candlestickSeries = chart.addCandlestickSeries({
-                upColor: '#00ff88',
-                downColor: '#ff4444',
-                borderUpColor: '#00ff88',
-                borderDownColor: '#ff4444',
-                wickUpColor: '#00ff88',
-                wickDownColor: '#ff4444',
+            series = chart.addCandlestickSeries({
+                upColor: '#26a69a', downColor: '#ef5350', borderUpColor: '#26a69a',
+                borderDownColor: '#ef5350', wickUpColor: '#26a69a', wickDownColor: '#ef5350',
             });
-            
-            window.addEventListener('resize', () => {
-                chart.applyOptions({
-                    width: chartContainer.clientWidth,
-                    height: chartContainer.clientHeight
-                });
-            });
+            new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth, height: el.clientHeight })).observe(el);
         }
-        
-        async function loadHistoricalData() {
-            try {
-                showLoading(true);
-                console.log('Loading data for', currentSymbol);
-                
-                const response = await fetch(`/api/historical/${currentSymbol}`);
-                const data = await response.json();
-                
-                if (data.error) {
-                    console.error(data.error);
-                    document.getElementById('signalCount').textContent = '❌ ' + data.error;
-                    showLoading(false);
-                    return;
-                }
-                
-                console.log('Loaded', data.candlestick_data.length, 'candles');
-                console.log('Found', data.markers.length, 'signals');
-                
-                candlestickSeries.setData(data.candlestick_data);
-                
-                // Enhanced markers with better styling
-                if (data.markers && data.markers.length > 0) {
-                    const enhancedMarkers = data.markers.map(marker => ({
-                        ...marker,
-                        color: marker.shape === 'arrowUp' ? '#00ff88' : '#ff4444',
-                        size: 3,  // Larger markers
-                    }));
-                    candlestickSeries.setMarkers(enhancedMarkers);
-                }
-                
-                chart.timeScale().fitContent();
-                updateUI(data);
-                startLiveUpdates();
-                showLoading(false);
-                
-            } catch (error) {
-                console.error('Error:', error);
-                showLoading(false);
+
+        function applyContext(d) {
+            ctx = { currency: d.currency, locale: d.locale };
+            series.applyOptions({ priceFormat: { type: 'custom', minMove: 0.01, formatter: (p) => money(p) } });
+            $('symbolName').textContent = d.symbol;
+            $('marketBadge').textContent = d.exchange;
+            $('companyName').textContent = d.name;
+            document.title = `${d.symbol} — Stock Trading AI`;
+        }
+
+        function renderQuote(q) {
+            const up = q.change >= 0;
+            $('price').textContent = money(q.price);
+            $('price').className = 'price ' + (up ? 'up' : 'down');
+            $('change').className = 'change ' + (up ? 'up' : 'down');
+            $('change').textContent = `${up ? '▲' : '▼'} ${money(Math.abs(q.change))} (${up ? '+' : ''}${q.change_pct.toFixed(2)}%)`;
+            $('dayOpen').textContent = money(q.open);
+            $('dayHigh').textContent = money(q.high);
+            $('dayLow').textContent = money(q.low);
+            $('volume').textContent = fmtVolume(q.volume);
+        }
+
+        function renderPrediction(p) {
+            const badge = $('signal');
+            badge.className = 'signal-badge ' + p.signal.toLowerCase();
+            badge.textContent = p.signal === 'HOLD' ? 'HOLD' : p.signal + ' ZONE';
+            const el = $('mlConf');
+            el.textContent = p.probability.toFixed(1) + '%' + (p.source === 'heuristic' ? ' (heuristic)' : '');
+            el.style.color = p.signal === 'BUY' ? '#00ff88' : p.signal === 'SELL' ? '#ff6b6b' : '';
+        }
+
+        function renderModelBar(d) {
+            const bar = $('modelBar');
+            bar.textContent = '';
+            const add = (html) => { const s = document.createElement('span'); s.innerHTML = html; bar.appendChild(s); };
+            const m = d.model;
+            if (!m) {
+                add('<span class="tag info">NO TRAINED MODEL</span>');
+                add(`Showing a simple momentum heuristic, not machine learning. Train one with <b>python train.py ${esc(d.symbol)}</b>.`);
+                return;
             }
+            const k = m.metrics, b = m.backtest;
+            add(m.has_edge ? '<span class="tag ok">EDGE DETECTED OUT-OF-SAMPLE</span>'
+                           : '<span class="tag warn">NO RELIABLE EDGE DETECTED</span>');
+            add(`Holdout <b>${m.holdout_start} → ${m.holdout_end}</b> (never seen in training)`);
+            add(`AUC <b>${k.auc.toFixed(3)}</b> (0.5 = coin flip, z=${k.auc_z.toFixed(1)}) · walk-forward CV <b>${k.cv_auc_mean.toFixed(3)}</b>`);
+            add(`Accuracy <b>${pct(k.accuracy)}</b> vs ${pct(k.baseline_accuracy)} always-guess-majority`);
+            const sm = m.semantic;
+            if (sm && sm.enabled && sm.ablation) {
+                const a = sm.ablation;
+                add(`Does news help? holdout AUC: price-only <b>${a.technical_only.auc.toFixed(3)}</b> · news/events-only <b>${a.semantic_only.auc.toFixed(3)}</b> · combined <b>${a.combined.auc.toFixed(3)}</b> `
+                    + (a.semantic_adds ? '<span class="tag ok">SEMANTICS ADD SIGNAL</span>' : '<span class="tag warn">SEMANTICS DO NOT ADD SIGNAL HERE</span>'));
+            }
+            add(`Backtest (long/flat, ${b.cost_bps_per_side} bps/side costs): <b>${signed(b.strategy_return)}</b> vs buy &amp; hold <b>${signed(b.buy_hold_return)}</b>, ${b.trades} trades`);
         }
-        
-        function updateUI(data) {
-            document.getElementById('symbolName').textContent = `📊 ${data.symbol}`;
-            document.getElementById('price').textContent = `$${data.price || data.current_price}`;
-            
-            const priceEl = document.getElementById('price');
-            const changeEl = document.getElementById('change');
-            
-            if (data.change >= 0) {
-                priceEl.className = 'price up';
-                changeEl.className = 'change up';
-                changeEl.textContent = `▲ +${data.change_pct.toFixed(2)}%`;
+
+        function renderWhy(w) {
+            const html = ['<h3>Why this call</h3>'];
+            const ex = w && w.explanation;
+            const sgn = (v) => (v >= 0 ? '+' : '') + v.toFixed(1);
+            if (ex) {
+                html.push(`<div class="lead">Model base rate <b>${ex.base_probability}%</b> → today's read <b>${ex.probability}%</b>.</div>`);
+                const max = Math.max(1, ...ex.groups.map((g) => Math.abs(g.effect_pp)));
+                html.push('<h3>What moved it</h3>');
+                for (const g of ex.groups) {
+                    const c = g.effect_pp >= 0 ? 'pos' : 'neg', width = Math.min(50, Math.abs(g.effect_pp) / max * 50);
+                    html.push(`<div class="grp"><span>${esc(g.label)}</span><div class="bar-track"><div class="bar ${c}" style="width:${width}%"></div></div>`
+                        + `<span class="pp ${c}">${sgn(g.effect_pp)}</span></div>`);
+                }
+                html.push('<div class="note">Percentage points of P(next close up); positive favours a rise.</div>');
+                html.push('<h3>Top individual drivers</h3>');
+                for (const d of ex.drivers) {
+                    html.push(`<div class="drv"><span>${esc(d.label)} <span class="val">${esc(d.value_text)}</span></span>`
+                        + `<span class="pp ${d.effect_pp >= 0 ? 'pos' : 'neg'}">${sgn(d.effect_pp)}</span></div>`);
+                }
             } else {
-                priceEl.className = 'price down';
-                changeEl.className = 'change down';
-                changeEl.textContent = `▼ ${data.change_pct.toFixed(2)}%`;
+                html.push('<div class="lead">No trained model for this symbol, so there is nothing to explain yet.</div>');
             }
-            
-            if (data.signal) {
-                const signalEl = document.getElementById('signal');
-                if (data.signal === 'BUY') {
-                    signalEl.className = 'signal-badge buy';
-                    signalEl.textContent = '🚀 BUY SIGNAL';
-                } else if (data.signal === 'SELL') {
-                    signalEl.className = 'signal-badge sell';
-                    signalEl.textContent = '⚠️ SELL SIGNAL';
-                } else {
-                    signalEl.className = 'signal-badge hold';
-                    signalEl.textContent = '⚪ HOLD';
+            if (w && !w.semantic_in_model) {
+                html.push('<div class="note" style="margin-top:8px">This model does not use the news / earnings layer '
+                    + '(train without <b>--no-news</b> to include it). Headlines below are context only.</div>');
+            }
+            const ev = (w && w.events) || {}, t = w && w.tone;
+            const hasSurprise = ev.last_surprise !== null && ev.last_surprise !== undefined;
+            if (ev.next_earnings || hasSurprise || t) {
+                html.push('<h3>Context</h3>');
+                if (ev.next_earnings) html.push(`<div>Next earnings: <b>${esc(ev.next_earnings)}</b></div>`);
+                if (hasSurprise) html.push(`<div>Last earnings (${esc(ev.last_earnings)}): EPS surprise <b>${sgn(ev.last_surprise)}%</b></div>`);
+                if (t) html.push(`<div>News, last 3 days: <b>${t.count}</b> headlines (${t.positive} positive / ${t.negative} negative), mean tone <b>${t.mean >= 0 ? '+' : ''}${t.mean}</b></div>`);
+            }
+            if (w && w.headlines && w.headlines.length) {
+                html.push('<h3>Latest headlines (tone score)</h3>');
+                for (const h of w.headlines) {
+                    const cls = h.score > 0.3 ? 'pos' : h.score < -0.3 ? 'neg' : 'neu';
+                    const title = h.link ? `<a href="${esc(h.link)}" target="_blank" rel="noopener noreferrer">${esc(h.title)}</a>` : esc(h.title);
+                    html.push(`<div class="headline"><span class="chip ${cls}">${h.score >= 0 ? '+' : ''}${h.score.toFixed(2)}</span>`
+                        + `<div>${title}<div class="src">${esc(h.source)} · ${esc(h.time)}</div></div></div>`);
                 }
             }
-            
-            if (data.total_signals !== undefined) {
-                const modelIcon = data.has_model ? '🤖' : '📊';
-                const countText = data.buy_signals && data.sell_signals 
-                    ? `${modelIcon} ${data.total_signals} signals (${data.buy_signals} 🟢 ${data.sell_signals} 🔴)`
-                    : `${modelIcon} ${data.total_signals} signals`;
-                document.getElementById('signalCount').textContent = countText;
-            }
-            
-            document.getElementById('dayHigh').textContent = `$${data.day_high}`;
-            document.getElementById('dayLow').textContent = `$${data.day_low}`;
-            document.getElementById('volume').textContent = (data.volume / 1000000).toFixed(1) + 'M';
-            
-            if (data.probability) {
-                const conf = data.probability;
-                const confEl = document.getElementById('mlConf');
-                confEl.textContent = conf + '%';
-                confEl.style.color = conf >= 60 ? '#00ff88' : conf <= 40 ? '#ff4444' : '#d1d4dc';
-            }
-            
-            if (data.timestamp) {
-                document.getElementById('timestamp').textContent = data.timestamp;
-            }
+            $('why').innerHTML = html.join('');
         }
-        
-        async function updateLiveData() {
+
+        function renderStatus(open, serverTime) {
+            $('statusDot').className = 'status-dot' + (open ? ' open' : '');
+            $('statusText').textContent = open ? 'Open' : 'Closed';
+            if (serverTime) $('timestamp').textContent = serverTime;
+        }
+
+        async function api(path, token) {
+            if (controller) controller.abort();
+            controller = new AbortController();
+            const market = $('marketSelect').value;
+            const res = await fetch(`${path}?market=${market}`, { signal: controller.signal });
+            const data = await res.json();
+            if (token !== requestToken) return null;      // user moved on
+            if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+            return data;
+        }
+
+        async function loadSymbol() {
+            const symbol = $('symbolInput').value.trim().toUpperCase();
+            if (!symbol) return;
+            clearTimeout(pollTimer);
+            const token = ++requestToken;
+            showLoading(true);
+            showError('');
             try {
-                const response = await fetch(`/api/live/${currentSymbol}`);
-                const data = await response.json();
-                if (data.error) return;
-                updateUI(data);
-            } catch (error) {
-                console.error('Live update error:', error);
+                const d = await api(`/api/historical/${encodeURIComponent(symbol)}`, token);
+                if (!d) return;
+                applyContext(d);
+                series.setData(d.candles);
+                series.setMarkers(d.markers.map(({ time, position, color, shape, text }) =>
+                    ({ time, position, color, shape, text, size: 2 })));
+                chart.timeScale().fitContent();
+                renderQuote(d.quote);
+                renderPrediction(d.prediction);
+                renderModelBar(d);
+                renderWhy(d.why);
+                renderStatus(false, d.quote.as_of);
+                const s = d.signals;
+                $('signalCount').textContent = `${s.total} signals (${s.buy} buy / ${s.sell} sell)`
+                    + (d.model ? `, ${s.out_of_sample} out-of-sample` : '');
+                poll(token, 500);
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                showError(e.message);
+            } finally {
+                if (token === requestToken) showLoading(false);
             }
         }
-        
-        function startLiveUpdates() {
-            if (updateInterval) clearInterval(updateInterval);
-            updateInterval = setInterval(updateLiveData, 5000);
+
+        async function poll(token, delay) {
+            pollTimer = setTimeout(async () => {
+                if (token !== requestToken) return;
+                let next = 60000;
+                try {
+                    if (!document.hidden) {
+                        const d = await api(`/api/live/${encodeURIComponent($('symbolInput').value.trim().toUpperCase())}`, token);
+                        if (d) {
+                            renderQuote(d.quote);
+                            renderPrediction(d.prediction);
+                            renderStatus(d.market_open, d.server_time);
+                            if (d.bar) series.update(d.bar);
+                            next = d.market_open ? 10000 : 60000;
+                        }
+                    }
+                } catch (e) { if (e.name === 'AbortError') return; }
+                if (token === requestToken) poll(token, next);
+            }, delay);
         }
-        
-        function changeSymbol() {
-            const input = document.getElementById('symbolInput');
-            currentSymbol = input.value.toUpperCase().trim();
-            input.value = currentSymbol;
-            if (currentSymbol) {
-                if (updateInterval) clearInterval(updateInterval);
-                loadHistoricalData();
-            }
-        }
-        
-        document.getElementById('symbolInput').addEventListener('change', changeSymbol);
-        document.getElementById('symbolInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') changeSymbol();
-        });
-        
+
+        $('symbolInput').addEventListener('change', loadSymbol);
+        $('symbolInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadSymbol(); });
+        $('marketSelect').addEventListener('change', loadSymbol);
+
         initChart();
-        loadHistoricalData();
+        loadSymbol();
     </script>
 </body>
 </html>
