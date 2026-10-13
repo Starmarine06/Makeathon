@@ -135,10 +135,13 @@ def news_query(symbol: str, mk: Market) -> str:
 
 def _fetch_window(query: str, start: date, end: date, mk: Market) -> list[dict] | None:
     """Headlines published in [start, end). None means the request failed (retry later), [] means none."""
+    return _fetch_query(f"{query} after:{start} before:{end}", mk)
+
+
+def _fetch_query(q: str, mk: Market) -> list[dict] | None:
     import feedparser
     hl, gl, ceid = _REGION[mk.code]
-    url = (f"https://news.google.com/rss/search?q={quote_plus(f'{query} after:{start} before:{end}')}"
-           f"&hl={hl}&gl={gl}&ceid={ceid}")
+    url = f"https://news.google.com/rss/search?q={quote_plus(q)}&hl={hl}&gl={gl}&ceid={ceid}"
     for attempt in range(3):
         try:
             r = requests.get(url, headers=_UA, timeout=15)
@@ -232,6 +235,52 @@ def load_news(symbol: str, mk: Market, start: date, end: date, scorer: Scorer,
     df = df[(df["ts"] >= lo) & (df["ts"] < hi)].sort_values("ts").reset_index(drop=True)
     df["score"] = score_headlines(df["title"].tolist(), scorer) if len(df) else pd.Series(dtype=float)
     return df
+
+
+def latest_news(symbol: str, mk: Market, scorer: Scorer, hours: int = 48, ttl: float = 45) -> pd.DataFrame:
+    """Freshest headlines (last `hours`), scored. Cached `ttl` seconds so polling clients share one fetch.
+
+    New items are also merged into the on-disk store, so they become training/feature history later."""
+    def load():
+        items = _fetch_query(f"{news_query(symbol, mk)} when:{max(1, -(-hours // 24))}d", mk)
+        if items is None:
+            return None
+        if items:
+            path = _store_path(symbol)
+            with _io_lock:
+                store = json.loads(path.read_text()) if path.exists() else {"windows": [], "items": []}
+                known = {(i["title"], i["ts"]) for i in store["items"]}
+                new = [i for i in items if (i["title"], i["ts"]) not in known]
+                if new:
+                    store["items"].extend(new)
+                    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(store))
+        df = pd.DataFrame(items, columns=["ts", "title", "source", "link"])
+        if df.empty:
+            return df.assign(score=pd.Series(dtype=float))
+        df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        df = df[df["ts"] >= pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours)]
+        df = df.sort_values("ts", ascending=False).reset_index(drop=True)
+        df["score"] = score_headlines(df["title"].tolist(), scorer) if len(df) else pd.Series(dtype=float)
+        return df
+    out = data_mod.cached(("latest", symbol, scorer.name), ttl, load)
+    return out if out is not None else pd.DataFrame(columns=["ts", "title", "source", "link", "score"])
+
+
+def news_alert(news: pd.DataFrame, now: pd.Timestamp | None = None) -> dict | None:
+    """Flag a cluster of bad news: 3+ strongly negative headlines in 6h (high), or a clearly negative
+    24h tone over 5+ headlines (elevated). Pure function of the scored headlines."""
+    if news is None or news.empty:
+        return None
+    now = now or pd.Timestamp.now(tz="UTC")
+    day = news[news["ts"] >= now - pd.Timedelta(hours=24)]
+    six = day[day["ts"] >= now - pd.Timedelta(hours=6)]
+    strong = int((six["score"] < -0.5).sum())
+    if strong >= 3:
+        return {"level": "high", "reason": f"{strong} strongly negative headlines in the last 6 hours"}
+    if len(day) >= 5 and day["score"].mean() < -0.25:
+        return {"level": "elevated", "reason": f"News tone over the last 24h is negative ({day['score'].mean():+.2f} across {len(day)} headlines)"}
+    return None
 
 
 # --------------------------------------------------------------------------- feature construction

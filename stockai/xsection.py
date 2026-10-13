@@ -36,6 +36,8 @@ def stock_frame(symbol: str, df: pd.DataFrame, ctx, sem=None) -> pd.DataFrame:
     mkt = ctx["mkt_close"].pct_change(fill_method=None) if ctx is not None and "mkt_close" in ctx else None
     f["idio_vol"] = (r - mkt).rolling(60).std() if mkt is not None else np.nan
     f["fwd"] = c.shift(-H) / c - 1
+    worst = df["Low"].rolling(H).min().shift(-H)                  # worst low of the next H sessions
+    f["dd"] = (worst / c - 1).where(worst.notna()).clip(upper=0)
     f["symbol"] = symbol
     f = f.iloc[WARMUP:]
     return f.set_index("symbol", append=True)                # index: (date, symbol)

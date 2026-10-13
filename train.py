@@ -44,6 +44,12 @@ def main() -> int:
               f"AUC {m['auc']:.3f} (z={m['auc_z']:+.1f}, cv {m['cv_auc_mean']:.3f})  "
               f"acc {m['accuracy']:.1%} vs {m['baseline_accuracy']:.1%} baseline  "
               f"strategy {b['strategy_return']:+.1%} vs buy&hold {b['buy_hold_return']:+.1%}  [{verdict}]")
+        d = meta["dip"]
+        h = d["holdout"]
+        print(f"      dip risk (>= {abs(d['threshold']):.1%} drop within {d['horizon_days']}d, base rate {h['base_rate']:.0%}): "
+              f"holdout AUC {h['auc']:.3f} (z={h['auc_z']:+.1f}) vs volatility-only {h['volatility_only_auc']:.3f}; "
+              f"top-quintile dip rate {h['dip_rate_when_top_quintile']:.0%} ({h['lift_top_quintile']:.1f}x)  "
+              f"[{'skill' if d['has_skill'] else 'no reliable skill'}]")
         ab = meta["semantic"]["ablation"]
         if ab:
             print(f"      semantic ablation (holdout AUC / cv): technical {ab['technical_only']['auc']:.3f}/{ab['technical_only']['cv_auc']:.3f}"

@@ -78,6 +78,22 @@
         .pp.pos { color: var(--up); } .pp.neg { color: var(--down); }
         .drv { grid-template-columns: 1fr auto; }
         .drv .val { color: var(--muted); }
+        .dip-badge { padding: 10px 14px; border-radius: 10px; font-weight: 700; font-size: 14px; color: #fff; cursor: help; }
+        .dip-badge.low { background: rgba(38,166,154,.25); color: var(--up); }
+        .dip-badge.elevated { background: rgba(240,180,41,.25); color: var(--warn); }
+        .dip-badge.high { background: linear-gradient(135deg, #ef5350, #d32f2f); }
+        .dip-badge.none { background: rgba(255,255,255,.08); color: var(--muted); }
+        .news-alert { display: none; padding: 8px 20px; font-size: 13px; font-weight: 600; }
+        .news-alert.show { display: block; }
+        .news-alert.elevated { background: rgba(240,180,41,.15); color: var(--warn); }
+        .news-alert.high { background: rgba(239,83,80,.2); color: #ff8a87; }
+        .dipbox { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; }
+        .dipbox .big { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+        .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #00ff88; margin-right: 6px;
+                    animation: pulse 1.6s ease-in-out infinite; }
+        @keyframes pulse { 50% { opacity: .25; } }
+        .headline.fresh { background: rgba(103,126,234,.14); border-radius: 6px; }
+        .headline .new { color: #aab6ff; font-weight: 700; font-size: 10px; margin-left: 6px; }
         .headline { padding: 7px 0; border-top: 1px solid rgba(255,255,255,0.06); display: grid; grid-template-columns: 40px 1fr; gap: 8px; }
         .chip { font-weight: 700; font-size: 11px; text-align: center; border-radius: 6px; padding: 2px 0; height: fit-content; font-variant-numeric: tabular-nums; }
         .chip.pos { background: rgba(38,166,154,.2); color: var(--up); } .chip.neg { background: rgba(239,83,80,.2); color: var(--down); }
@@ -148,11 +164,13 @@
                 <option value="us">🇺🇸 US</option>
             </select>
             <div class="signal-badge hold" id="signal">HOLD</div>
+            <div class="dip-badge none" id="dipBadge" title="Chance of a significant drop in the next few sessions">DIP RISK --</div>
             <div class="signal-count" id="signalCount"></div>
         </div>
     </div>
 
     <div class="error-banner" id="errorBanner" role="alert"></div>
+    <div class="news-alert" id="newsAlert" role="alert"></div>
     <div class="model-bar" id="modelBar"></div>
 
     <div class="main">
@@ -164,7 +182,11 @@
             <div><span class="dot buy faint"></span> Faded = in-sample (model trained on these bars)</div>
         </div>
     </div>
-    <aside class="why" id="why" aria-label="Why this prediction"></aside>
+    <aside class="why" aria-label="Dip risk, live news and explanation">
+        <div id="dipBox"></div>
+        <div id="liveNews"></div>
+        <div id="why"></div>
+    </aside>
     </div>
 
     <div class="stats-bar">
@@ -318,16 +340,73 @@
                 if (hasSurprise) html.push(`<div>Last earnings (${esc(ev.last_earnings)}): EPS surprise <b>${sgn(ev.last_surprise)}%</b></div>`);
                 if (t) html.push(`<div>News, last 3 days: <b>${t.count}</b> headlines (${t.positive} positive / ${t.negative} negative), mean tone <b>${t.mean >= 0 ? '+' : ''}${t.mean}</b></div>`);
             }
-            if (w && w.headlines && w.headlines.length) {
-                html.push('<h3>Latest headlines (tone score)</h3>');
-                for (const h of w.headlines) {
-                    const cls = h.score > 0.3 ? 'pos' : h.score < -0.3 ? 'neg' : 'neu';
-                    const title = h.link ? `<a href="${esc(h.link)}" target="_blank" rel="noopener noreferrer">${esc(h.title)}</a>` : esc(h.title);
-                    html.push(`<div class="headline"><span class="chip ${cls}">${h.score >= 0 ? '+' : ''}${h.score.toFixed(2)}</span>`
-                        + `<div>${title}<div class="src">${esc(h.source)} · ${esc(h.time)}</div></div></div>`);
-                }
-            }
             $('why').innerHTML = html.join('');
+        }
+
+        function renderDip(d) {
+            const badge = $('dipBadge'), box = $('dipBox');
+            if (!d) { badge.className = 'dip-badge none'; badge.textContent = 'DIP RISK --'; box.innerHTML = ''; return; }
+            const lvl = d.level.toLowerCase();
+            badge.className = 'dip-badge ' + lvl;
+            badge.textContent = 'DIP RISK ' + d.level + (d.model ? ` ${d.probability}%` : '');
+            const html = ['<div class="dipbox">'];
+            if (d.model) {
+                badge.title = `Chance of a drop of at least ${d.threshold_pct}% below the last close within ${d.horizon} sessions (usual rate: ${d.base_rate}%)`;
+                html.push(`<div class="note">Chance of a bigger-than-normal drop (≥ ${d.threshold_pct === null ? '?' : d.threshold_pct}% for this stock) within ${d.horizon} sessions</div>`
+                    + `<div class="big">${d.probability}% <span class="note">(normally ${d.base_rate}%)</span></div>`);
+                if (d.drivers && d.drivers.length) {
+                    html.push('<div class="note" style="margin-top:6px">Main reasons:</div>');
+                    for (const x of d.drivers) html.push(`<div class="drv"><span>${esc(x.label)} <span class="val">${esc(x.value_text)}</span></span>`
+                        + `<span class="pp ${x.effect_pp >= 0 ? 'neg' : 'pos'}">${x.effect_pp >= 0 ? '+' : ''}${x.effect_pp.toFixed(1)}</span></div>`);
+                }
+                html.push(`<div class="note" style="margin-top:6px">Tested on ${d.pooled ? 'two years of unseen data across ~50 stocks' : 'unseen data for this stock'}: AUC ${esc(d.auc_text)} `
+                    + `(volatility alone: ${d.volatility_only_auc}).`
+                    + (d.top_rate !== null && d.top_rate !== undefined ? ` On the riskiest 20% of days a dip followed ${d.top_rate}% of the time vs ${d.safest_rate}% on the safest 20%.` : '')
+                    + (d.has_skill ? '' : ' <b>No statistically reliable skill.</b>')
+                    + ' A warning, not a certainty.</div>');
+            } else {
+                html.push('<div class="note">No dip model trained for this symbol. Run <b>python train.py SYMBOL</b>. Showing news-based warning only.</div>');
+            }
+            if (d.news_alert) html.push(`<div class="note" style="margin-top:6px;color:var(--warn)">⚠ ${esc(d.news_alert.reason)} (heuristic, not backtested)</div>`);
+            html.push('</div>');
+            box.innerHTML = html.join('');
+        }
+
+        const seenNews = new Set();
+        let newsTimer = null, firstNews = true;
+        function renderNews(d) {
+            const alertEl = $('newsAlert');
+            if (d.alert) { alertEl.className = 'news-alert show ' + d.alert.level; alertEl.textContent = '⚠ ' + d.alert.reason; }
+            else alertEl.className = 'news-alert';
+            const t = d.tone_24h;
+            const html = [`<h3><span class="live-dot"></span>Live news · updated ${esc(d.server_time)}</h3>`];
+            if (t) html.push(`<div class="note" style="margin-bottom:6px">Last 24h: ${t.count} headlines (${t.positive} positive / ${t.negative} negative), tone ${t.mean >= 0 ? '+' : ''}${t.mean}</div>`);
+            if (!d.headlines.length) html.push('<div class="note">No headlines in the last 72 hours.</div>');
+            for (const h of d.headlines) {
+                const fresh = !firstNews && !seenNews.has(h.id);
+                seenNews.add(h.id);
+                const cls = h.score > 0.3 ? 'pos' : h.score < -0.3 ? 'neg' : 'neu';
+                const title = h.link ? `<a href="${esc(h.link)}" target="_blank" rel="noopener noreferrer">${esc(h.title)}</a>` : esc(h.title);
+                html.push(`<div class="headline${fresh ? ' fresh' : ''}"><span class="chip ${cls}">${h.score >= 0 ? '+' : ''}${h.score.toFixed(2)}</span>`
+                    + `<div>${title}${fresh ? '<span class="new">NEW</span>' : ''}<div class="src">${esc(h.source)} · ${esc(h.time)}</div></div></div>`);
+            }
+            $('liveNews').innerHTML = html.join('');
+            firstNews = false;
+        }
+
+        function pollNews(token, delay) {
+            newsTimer = setTimeout(async () => {
+                if (token !== requestToken) return;
+                try {
+                    if (!document.hidden || firstNews) {
+                        const sym = encodeURIComponent($('symbolInput').value.trim().toUpperCase());
+                        const res = await fetch(`/api/news/${sym}?market=${$('marketSelect').value}`);
+                        const d = await res.json();
+                        if (token === requestToken && res.ok && !d.error) renderNews(d);
+                    }
+                } catch (e) { /* keep polling */ }
+                if (token === requestToken) pollNews(token, 45000);
+            }, delay);
         }
 
         function renderStatus(open, serverTime) {
@@ -351,6 +430,9 @@
             const symbol = $('symbolInput').value.trim().toUpperCase();
             if (!symbol) return;
             clearTimeout(pollTimer);
+            clearTimeout(newsTimer);
+            seenNews.clear(); firstNews = true;
+            $('liveNews').innerHTML = ''; $('newsAlert').className = 'news-alert';
             const token = ++requestToken;
             showLoading(true);
             showError('');
@@ -366,6 +448,8 @@
                 renderPrediction(d.prediction);
                 renderModelBar(d);
                 renderWhy(d.why);
+                renderDip(d.dip);
+                pollNews(token, 100);
                 renderStatus(false, d.quote.as_of);
                 const s = d.signals;
                 $('signalCount').textContent = `${s.total} signals (${s.buy} buy / ${s.sell} sell)`
@@ -389,6 +473,7 @@
                         if (d) {
                             renderQuote(d.quote);
                             renderPrediction(d.prediction);
+                            renderDip(d.dip);
                             renderStatus(d.market_open, d.server_time);
                             if (d.bar) series.update(d.bar);
                             next = d.market_open ? 10000 : 60000;

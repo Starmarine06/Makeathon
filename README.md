@@ -36,6 +36,28 @@ reversal, volatility, earnings surprise (and optionally news tone), holds the to
 5 days, and is evaluated **walk-forward, out-of-sample, after costs** against an equal-weight benchmark and
 a plain-momentum baseline, with rank-IC significance.
 
+## Live news + dip risk
+`python train_dip.py --market us|in` trains a **pooled** dip-risk model across ~50 stocks (one model per
+market). A "dip" = the worst low in the next 5 sessions is at least 1.5 x the stock's own 5-day volatility
+below today's close, so the model cannot score by merely noticing that volatile stocks fall further.
+The app shows the probability next to the stock's normal rate, the main reasons, and its tested accuracy.
+
+Held-out results (last ~2 years, 90% block-bootstrap CI on AUC; 0.5 = chance):
+
+| Market | AUC | 90% CI | Riskiest 20% of days dipped | Safest 20% dipped | Base rate |
+|---|---|---|---|---|---|
+| US (50 large caps) | 0.654 | 0.616-0.688 | 21% | 5% | 12% |
+| India (Nifty 48) | 0.628 | 0.582-0.662 | 22% | 7% | 13% |
+
+Per-stock dip models (AAPL/NVDA/TSLA) were **not** reliable on their own (too little data), hence the
+pooled model. Main drivers are earnings timing, volume and volatility regime. This is a *warning with
+quantified odds*, not a prediction that a dip will happen; most flagged days do not dip.
+
+`/api/news/<symbol>` returns freshest headlines (Google News RSS, FinBERT-scored, 45 s shared cache); the
+UI polls it every 45 s, marks new items, and shows a banner on a cluster of strongly negative headlines.
+That news alert is a transparent rule (3+ strongly negative headlines in 6 h, or a sour 24 h tone) and is
+**not backtested**; it can raise a LOW model reading to ELEVATED but never lowers it.
+
 ## Results (honest)
 Out-of-sample 2020 → Oct 2026, top-10 of ~50, weekly, after costs (2 bps/side US, 12 bps/side India):
 
