@@ -3,6 +3,8 @@
 Flask app that charts daily candles for US and Indian (NSE/BSE) stocks, overlays BUY/SELL zones from a
 per-symbol XGBoost model, and shows **how well that model actually did on data it never saw**.
 
+![RELIANCE.NS daily candles with BUY and SELL markers, and the live news panel with a tone score per headline](docs/dashboard.jpg)
+
 ## Run
     pip install -r requirements.txt
     python train.py RELIANCE TCS AAPL        # bare Nifty names get .NS; or: --preset nifty / --preset us
@@ -11,6 +13,7 @@ per-symbol XGBoost model, and shows **how well that model actually did on data i
 Symbols: `RELIANCE`, `TCS.NS`, `500325.BO`, `^NSEI`, `AAPL`. Use the market selector for collisions
 (e.g. `INFY` + US = the ADR). `HOST=0.0.0.0` / `FLASK_DEBUG=1` are opt-in.
 Without a trained model the app falls back to a momentum heuristic and says so.
+The first page load downloads the FinBERT news model (about 440 MB), so the chart can take a few minutes to appear once. Set `STOCKAI_SCORER=vader` to skip it.
 
 ## Design
 - `stockai/features.py` — one feature pipeline for training *and* serving (no train/serve skew);
